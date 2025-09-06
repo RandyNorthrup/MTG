@@ -1,36 +1,43 @@
-import pygame
-from config import CARD_W, CARD_H, ZOOM_W, ZOOM_H, FONT_NAME
+from PySide6.QtGui import QPainter, QColor, QPen, QFont
+from PySide6.QtCore import QRect
+from config import CARD_W, CARD_H, ZOOM_W, ZOOM_H
 
 class CardRenderer:
     def __init__(self):
-        self.font_small = pygame.font.Font(FONT_NAME, 14)
-        self.font_big = pygame.font.Font(FONT_NAME, 18)
+        self.font_small = QFont("SansSerif", 8)
+        self.font_big = QFont("SansSerif", 10, QFont.Bold)
 
-    def draw_card(self, surface, rect, card, highlight=False):
-        pygame.draw.rect(surface, (240, 240, 240), rect, border_radius=8)
-        pygame.draw.rect(surface, (0, 0, 0), rect, 2, border_radius=8)
+    def draw_card(self, p: QPainter, rect: QRect, card, highlight=False):
+        p.save()
+        p.setBrush(QColor(245,245,245))
+        p.setPen(QPen(QColor(0,0,0), 2))
+        p.drawRoundedRect(rect, 6, 6)
         if highlight:
-            pygame.draw.rect(surface, (0, 200, 0), rect, 3, border_radius=8)
-
-        name_surf = self.font_big.render(card.name, True, (10, 10, 10))
-        surface.blit(name_surf, (rect.x + 6, rect.y + 6))
-
-        tline = "/".join(card.types)
-        type_surf = self.font_small.render(tline, True, (60, 60, 60))
-        surface.blit(type_surf, (rect.x + 6, rect.y + 30))
-
+            p.setPen(QPen(QColor(0,180,0), 3))
+            p.drawRoundedRect(rect, 6, 6)
+        p.setFont(self.font_big)
+        p.setPen(QColor(10,10,10))
+        p.drawText(rect.adjusted(6,4,-6,-4), 0, card.name)
+        p.setFont(self.font_small)
+        p.setPen(QColor(60,60,60))
+        p.drawText(rect.adjusted(6,20,-6,-6), 0, "/".join(card.types))
         if "Creature" in card.types and card.power is not None:
             pt = f"{card.power}/{card.toughness}"
-            pt_surf = self.font_big.render(pt, True, (10, 10, 10))
-            surface.blit(pt_surf, (rect.right - pt_surf.get_width() - 8, rect.bottom - pt_surf.get_height() - 6))
+            p.setFont(self.font_big)
+            p.drawText(rect.adjusted(0,0,-6,-4), 0x0002 | 0x0080, pt)  # Align right|bottom
+        p.restore()
 
-    def draw_zoom(self, surface, center, card):
-        rect = pygame.Rect(0, 0, ZOOM_W, ZOOM_H)
-        rect.center = center
-        pygame.draw.rect(surface, (250, 250, 250), rect, border_radius=8)
-        pygame.draw.rect(surface, (0, 0, 0), rect, 2, border_radius=8)
-        name = self.font_big.render(card.name, True, (10, 10, 10))
-        surface.blit(name, (rect.x + 10, rect.y + 10))
-        tline = "/".join(card.types)
-        tl = self.font_small.render(tline, True, (50, 50, 50))
-        surface.blit(tl, (rect.x + 10, rect.y + 40))
+    def draw_zoom(self, p: QPainter, center_x: int, center_y: int, card):
+        rect = QRect(0,0,ZOOM_W,ZOOM_H)
+        rect.moveCenter(QRect(center_x, center_y, 1,1).center())
+        p.save()
+        p.setBrush(QColor(255,255,255))
+        p.setPen(QPen(QColor(0,0,0),2))
+        p.drawRoundedRect(rect, 8,8)
+        p.setFont(self.font_big)
+        p.setPen(QColor(10,10,10))
+        p.drawText(rect.adjusted(10,10,-10,-10), 0, card.name)
+        p.setFont(self.font_small)
+        p.setPen(QColor(40,40,40))
+        p.drawText(rect.adjusted(10,30,-10,-10), 0, "/".join(card.types))
+        p.restore()

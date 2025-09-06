@@ -1,157 +1,186 @@
-import pygame
-from typing import List
-from config import *
-from .card_renderer import CardRenderer
-from .interaction import Interaction
-from ui.tabs import TabBar, TAB_HEIGHT
+from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QPainter, QMouseEvent, QPaintEvent, QPen, QColor
+from PySide6.QtCore import Qt, QTimer, QRect
+from config import CARD_W, CARD_H, HAND_HEIGHT, BATTLEFIELD_HEIGHT, SCREEN_W, SCREEN_H, PADDING, ZOOM_W, ZOOM_H
+# The engine game object is passed in from main
+# This file used to host the pygame UIManager; now only PlayArea is required.
 
-class UIManager:
-    def __init__(self, game):
+class PlayArea(QWidget):
+    """
+    Central play surface:
+      - Renders both battlefields, player hand, commanders.
+      - Left-click playable card in hand to play/cast (auto-taps lands for generic cost).
+      - Hover shows zoom panel (top-left).
+      - Scoreboard toggled via 'S' (handled in MainWindow).
+    """
+    def __init__(self, game, parent=None):
+        super().__init__(parent)
         self.game = game
+        self.setMouseTracking(True)
+        self.hover_card = None
+        self.playable_ids = set()
+        self.scoreboard_visible = False
+        self.zoom_enabled = True
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.timeout.connect(self._update_playables)
+        self._refresh_timer.start(400)
+        self._update_playables()
 
-        # Tabs: 0=Home, 1=Decks, 2=Play
-        self.active_tab = 0
-        self.tabbar = TabBar(["Home", "Decks", "Play"], on_change=self._switch_tab)
+    # -------- Internal helpers --------
+    def _update_playables(self):
+        try:
+            ps = self.game.players[0]
+            self.playable_ids = {c.id for c in ps.find_playable()}
+        except Exception:
+            self.playable_ids = set()
+        self.update()
 
-        self.card_r = CardRenderer()
-        self.inter = Interaction()
+    def _hand_rects(self):
+        ps = self.game.players[0]
+        n = len(ps.hand)
+        if n == 0:
+            return []
+        spacing = min(20, max(6, (self.width() - 2*PADDING - CARD_W) // max(1, n)))
+        x = PADDING
+        y = self.height() - HAND_HEIGHT + 12
+        rects = []
+        for _ in range(n):
+            rects.append(QRect(x, y, CARD_W, CARD_H))
+            x += spacing
+        return rects
 
-        # Optional panels (attach outside if you have them)
-        self.deckbuilder = getattr(self, "deckbuilder", None)
-        self.playfield   = getattr(self, "playfield", None)
+    def _card_index_at(self, rects, pos):
+        for i, r in enumerate(rects):
+            if r.contains(pos):
+                return i
+        return None
 
-        self.font = pygame.font.Font(FONT_NAME, 18)
-        self.font_large = pygame.font.Font(FONT_NAME, 28)
-        self.small = pygame.font.Font(FONT_NAME, 14)
+    def _autotap_and_cast(self, card):
+        ps = self.game.players[0]
+        need = card.mana_cost if isinstance(card.mana_cost, int) else 0
+        for perm in list(ps.battlefield):
+            if need <= 0:
+                break
+            if 'Land' in perm.card.types and not perm.tapped:
+                self.game.tap_for_mana(0, perm)
+                need -= 1
+        self.game.cast_spell(0, card)
 
-        self.inter.hover_card = None
+    # -------- Qt Events --------
+    def mouseMoveEvent(self, e: QMouseEvent):
+        ps = self.game.players[0]
+        rects = self._hand_rects()
+        idx = self._card_index_at(rects, e.position().toPoint())
+        self.hover_card = ps.hand[idx] if idx is not None else None
+        self.update()
 
-    def _switch_tab(self, idx: int):
-        self.active_tab = idx
-
-    # ----- Events -----
-
-    def handle_event(self, event: pygame.event.Event):
-        self.tabbar.handle_event(event)
-
-        if self.active_tab == 1 and self.deckbuilder and hasattr(self.deckbuilder, "handle_event"):
-            self.deckbuilder.handle_event(event)
-        elif self.active_tab == 2 and self.playfield and hasattr(self.playfield, "handle_event"):
-            self.playfield.handle_event(event)
-
-        if self.active_tab == 2 and event.type == pygame.MOUSEMOTION:
-            self._update_hand_hover()
-
-    # ----- Draw -----
-
-    def draw(self, screen: pygame.Surface):
-        screen.fill((20, 20, 30))
-        self.tabbar.draw(screen, screen.get_width())
-        content = pygame.Rect(0, TAB_HEIGHT, screen.get_width(), screen.get_height() - TAB_HEIGHT)
-
-        if self.active_tab == 0:
-            self.draw_home(screen, content)
-        elif self.active_tab == 1:
-            self.draw_decks(screen, content)
+    def mousePressEvent(self, e: QMouseEvent):
+        if e.button() != Qt.LeftButton:
+            return
+        # Only allow actions in main phases as active player 0
+        if self.game.active_player != 0 or self.game.phase not in ('MAIN1', 'MAIN2'):
+            return
+        ps = self.game.players[0]
+        rects = self._hand_rects()
+        idx = self._card_index_at(rects, e.position().toPoint())
+        if idx is None:
+            return
+        card = ps.hand[idx]
+        if card.id not in self.playable_ids:
+            return
+        if 'Land' in card.types:
+            self.game.play_land(0, card)
         else:
-            self.draw_play(screen, content)
+            self._autotap_and_cast(card)
+        self._update_playables()
 
-        if self.inter.hover_card is not None:
-            mx, my = pygame.mouse.get_pos()
-            self.card_r.draw_zoom(screen, (mx + 140, my), self.inter.hover_card)
+    def paintEvent(self, e: QPaintEvent):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(18,18,25))
 
-    def draw_home(self, screen: pygame.Surface, rect: pygame.Rect):
-        f = self.font_large
-        lines = [
-            "Welcome to MTG Commander.",
-            "• Use Decks to build/validate decks (Commander rules enforced).",
-            "• Go to Play to start a match against the AI.",
-        ]
-        y = rect.y + 20
-        for t in lines:
-            surf = f.render(t, True, (230, 230, 240))
-            screen.blit(surf, (rect.x + 20, y))
-            y += 34
-
-        hint = self.small.render("Commander: 40 life, 21 commander combat damage loses.", True, (190, 190, 210))
-        screen.blit(hint, (rect.x + 20, y + 8))
-
-    def draw_decks(self, screen: pygame.Surface, rect: pygame.Rect):
-        if self.deckbuilder and hasattr(self.deckbuilder, "draw"):
-            self.deckbuilder.draw(screen, rect)
-        else:
-            msg = self.font.render("Deckbuilder not initialized.", True, (230, 150, 150))
-            screen.blit(msg, (rect.x + 20, rect.y + 20))
-
-    def draw_play(self, screen: pygame.Surface, rect: pygame.Rect):
         # Opponent battlefield (top)
-        y_bf_ai = rect.y + PADDING + 40
-        self._draw_battlefield(screen, self.game.players[1].battlefield, y_bf_ai)
-
-        # Your battlefield (bottom)
-        y_bf_player = rect.bottom - HAND_HEIGHT - BATTLEFIELD_HEIGHT - PADDING
-        self._draw_battlefield(screen, self.game.players[0].battlefield, y_bf_player)
-
-        # Your hand (bottom strip)
-        self._draw_hand(screen)
-
+        self._draw_battlefield(p, self.game.players[1].battlefield, PADDING + 40)
+        # Player battlefield (bottom area above hand)
+        bf_y = self.height() - HAND_HEIGHT - BATTLEFIELD_HEIGHT
+        self._draw_battlefield(p, self.game.players[0].battlefield, bf_y)
+        # Hand
+        self._draw_hand(p)
         # Commanders
-        self._draw_commanders(screen)
+        self._draw_commanders(p)
+        # Scoreboard
+        if self.scoreboard_visible:
+            self._draw_scoreboard(p)
+        # Hover zoom
+        if self.hover_card and self.zoom_enabled:
+            self._draw_zoom(p, self.hover_card)
 
-        if self.playfield and hasattr(self.playfield, "draw"):
-            self.playfield.draw(screen, rect)
-
-    # ----- Helpers -----
-
-    def _draw_battlefield(self, screen: pygame.Surface, battlefield, y: int):
+    # -------- Drawing helpers --------
+    def _draw_battlefield(self, p: QPainter, battlefield, y: int):
         x = PADDING
         for perm in battlefield:
-            r = pygame.Rect(x, y, CARD_W, CARD_H)
-            self.card_r.draw_card(screen, r, perm.card, highlight=False)
+            r = QRect(x, y, CARD_W, CARD_H)
+            self._draw_card(p, r, perm.card, highlight=False)
             if perm.tapped:
-                pygame.draw.line(screen, (200, 50, 50), (r.left, r.top), (r.right, r.bottom), 4)
+                pen = QPen(QColor(200,50,50), 3)
+                p.setPen(pen)
+                p.drawLine(r.topLeft(), r.bottomRight())
             x += CARD_W + 12
 
-    def _hand_rects(self) -> List[pygame.Rect]:
-        ps = self.game.players[0]
-        return self.inter.hand_card_rects(len(ps.hand))
-
-    def _update_hand_hover(self):
+    def _draw_hand(self, p: QPainter):
         ps = self.game.players[0]
         rects = self._hand_rects()
-        mx, my = pygame.mouse.get_pos()
-        idx = self.inter.card_at_pos(rects, (mx, my))
-        self.inter.hover_card = ps.hand[idx] if idx is not None else None
-
-    def _draw_hand(self, screen: pygame.Surface):
-        ps = self.game.players[0]
-        rects = self._hand_rects()
-        playable_ids = {c.id for c in ps.find_playable()}  # hash-safe
         for i, r in enumerate(rects):
-            c = ps.hand[i]
-            self.card_r.draw_card(screen, r, c, highlight=(c.id in playable_ids))
-        self._update_hand_hover()
+            card = ps.hand[i]
+            self._draw_card(p, r, card, highlight=(card.id in self.playable_ids))
 
-    def _draw_commanders(self, screen: pygame.Surface):
-        p = self.game.players[0]
-        a = self.game.players[1]
-        rect_p = pygame.Rect(PADDING, SCREEN_H - HAND_HEIGHT - CARD_H - 10, CARD_W, CARD_H)
-        rect_a = pygame.Rect(SCREEN_W - CARD_W - PADDING, PADDING + 40, CARD_W, CARD_H)
+    def _draw_commanders(self, p: QPainter):
+        p0 = self.game.players[0]
+        p1 = self.game.players[1]
+        if p0.commander:
+            r0 = QRect(PADDING, self.height() - HAND_HEIGHT - CARD_H - 10, CARD_W, CARD_H)
+            self._draw_card(p, r0, p0.commander, p0.commander in p0.command)
+        if p1.commander:
+            r1 = QRect(self.width() - CARD_W - PADDING, 10, CARD_W, CARD_H)
+            self._draw_card(p, r1, p1.commander, p1.commander in p1.command)
 
-        if p.commander:
-            in_command = (p.commander in p.command)
-            self.card_r.draw_card(screen, rect_p, p.commander, highlight=in_command)
-            casts = p.commander_tracker.cast_counts.get(p.commander.id, 0)
-            tax = 2 * casts
-            screen.blit(self.small.render(f"Cast x{casts} (Tax +{tax})", True, (230,230,230)), (rect_p.x, rect_p.bottom + 2))
-            dealt = p.commander_tracker.damage.get((a.player_id, p.player_id), 0)
-            screen.blit(self.small.render(f"Dealt to Opp: {dealt}/21", True, (210,210,240)), (rect_p.x, rect_p.bottom + 18))
+    def _draw_scoreboard(self, p: QPainter):
+        p.save()
+        p.setPen(QColor(230,230,230))
+        bg = QRect(8,8,260, 22*len(self.game.players)+12)
+        p.fillRect(bg, QColor(0,0,0,140))
+        y = 26
+        for pl in self.game.players:
+            line = f"{pl.name}  L:{pl.life}  Lib:{len(pl.library)}  BF:{len(pl.battlefield)}"
+            p.drawText(16, y, line)
+            y += 22
+        p.restore()
 
-        if a.commander:
-            in_command = (a.commander in a.command)
-            self.card_r.draw_card(screen, rect_a, a.commander, highlight=in_command)
-            casts = a.commander_tracker.cast_counts.get(a.commander.id, 0)
-            tax = 2 * casts
-            screen.blit(self.small.render(f"Cast x{casts} (Tax +{tax})", True, (230,230,230)), (rect_a.x - 30, rect_a.bottom + 2))
-            dealt = a.commander_tracker.damage.get((p.player_id, a.player_id), 0)
-            screen.blit(self.small.render(f"Dealt to You: {dealt}/21", True, (210,210,240)), (rect_a.x - 30, rect_a.bottom + 18))
+    def _draw_zoom(self, p: QPainter, card):
+        rect = QRect(0,0,ZOOM_W,ZOOM_H)
+        rect.moveTopLeft(QRect(0,0,ZOOM_W,ZOOM_H).topLeft() + p.viewport().topLeft())
+        rect.translate(20, 20)
+        p.save()
+        p.setBrush(QColor(255,255,255))
+        p.setPen(QPen(Qt.black,2))
+        p.drawRoundedRect(rect, 8,8)
+        p.setPen(Qt.black)
+        p.drawText(rect.adjusted(10,10,-10,-10), Qt.TextWordWrap, f"{card.name}\n{' / '.join(card.types)}")
+        p.restore()
+
+    def _draw_card(self, p: QPainter, rect: QRect, card, highlight=False):
+        p.save()
+        p.setBrush(QColor(245,245,245))
+        p.setPen(QPen(Qt.black, 2))
+        p.drawRoundedRect(rect, 6,6)
+        if highlight:
+            p.setPen(QPen(QColor(0,180,0),3))
+            p.drawRoundedRect(rect, 6,6)
+        p.setPen(Qt.black)
+        p.drawText(rect.adjusted(4,4,-4,-4), 0, card.name[:18])
+        type_line = "/".join(card.types)[:18]
+        p.setPen(QColor(70,70,70))
+        p.drawText(rect.adjusted(4,22,-4,-4), 0, type_line)
+        if "Creature" in card.types and card.power is not None:
+            p.setPen(Qt.black)
+            p.drawText(rect.adjusted(0,0,-6,-4), Qt.AlignRight | Qt.AlignBottom, f"{card.power}/{card.toughness}")
+        p.restore()

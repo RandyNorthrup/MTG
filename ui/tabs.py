@@ -2,7 +2,7 @@
 import pygame
 from typing import List, Tuple, Optional, Callable
 
-TAB_HEIGHT = 40
+TAB_HEIGHT = 40  # Retained for legacy layout references (Qt uses QTabWidget now)
 PAD = 12
 
 class TabBar:

@@ -26,3 +26,7 @@ data/cards/*.zip
 # If using Git LFS for curated JSONs, ensure:
 # git lfs track "data/cards/*.json"
 # (Then commit .gitattributes)
+
+# Test / type caches
+.pytest_cache/
+.mypy_cache/

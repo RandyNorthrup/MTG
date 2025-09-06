@@ -1,6 +1,3 @@
-
-
-
 ## Game Code
 
 ### `config.py`
@@ -12,6 +9,9 @@ BATTLEFIELD_HEIGHT = 260
 PADDING = 10
 CARD_W, CARD_H = 100, 140
 ZOOM_W, ZOOM_H = 250, 350
+STARTING_LIFE = 40
+COMMANDER_DAMAGE_TO_KILL = 21
+FONT_NAME = None  # Qt uses built-in fonts (override via QFont if desired)
 STARTING_LIFE = 40
 COMMANDER_DAMAGE_TO_KILL = 21
 FONT_NAME = None
