@@ -1,4 +1,4 @@
-﻿import pygame, sys, os, json, re
+import pygame, sys, os, json, re
 from typing import List, Tuple, Optional
 from config import *
 from engine.game_state import GameState, PlayerState
@@ -83,21 +83,19 @@ def _resolve_entry(entry: str, by_id: dict, by_name_lower: dict, by_norm: dict, 
         f"(this loader now resolves those too)."
     )
 
-def _build_cards_from_entries(entries: List[str], commander_name: Optional[str], *,
-                              by_id: dict, by_name_lower: dict, by_norm: dict,
-                              db_path_used: str, deck_path: str, owner_id: int) -> Tuple[List[Card], Optional[Card]]:
-    """
-    Shared builder: given normalized entries (each string is a card name or id), plus an optional commander name,
-    resolve to Card objects and return (library_cards, commander_card).
-    """
-    cards: List[Card] = []
-    commander_card: Optional[dict] = None
-    if commander_name:
-        commander_card = _resolve_entry(commander_name, by_id, by_name_lower, by_norm, deck_path, db_path_used)
+def load_deck(path: str, by_id: dict, by_name_lower: dict, by_norm: dict, db_path_used: str, owner_id: int) -> Tuple[List[Card], Optional[Card]]:
+    with open(path,'r',encoding='utf-8') as f:
+        d = json.load(f)
 
-    for entry in entries:
-        cdata = _resolve_entry(entry, by_id, by_name_lower, by_norm, deck_path, db_path_used)
-        # Don't add the commander to the main 99; we’ll materialize it separately
+    cards: List[Card] = []
+
+    commander_entry = d.get('commander')
+    commander_card: Optional[dict] = None
+    if commander_entry:
+        commander_card = _resolve_entry(commander_entry, by_id, by_name_lower, by_norm, path, db_path_used)
+
+    for entry in d.get('cards', []):
+        cdata = _resolve_entry(entry, by_id, by_name_lower, by_norm, path, db_path_used)
         if commander_card and cdata['id'] == commander_card['id']:
             continue
         cards.append(Card(
@@ -117,61 +115,12 @@ def _build_cards_from_entries(entries: List[str], commander_name: Optional[str],
             color_identity=commander_card.get('color_identity',[]),
             owner_id=owner_id, controller_id=owner_id
         )
-    return cards, commander_obj
-
-def load_deck(path: str, by_id: dict, by_name_lower: dict, by_norm: dict,
-              db_path_used: str, owner_id: int) -> Tuple[List[Card], Optional[Card]]:
-    """
-    Load a deck from either JSON (.json) or plain text (.txt).
-    - JSON expects: { "commander": "...", "cards": ["...", ...] }
-    - TXT expects lines like "1 Card Name"; the last non-empty line is treated as the commander.
-    """
-    _, ext = os.path.splitext(path)
-    ext = ext.lower()
-
-    if ext == ".txt":
-        entries, commander_name = parse_commander_txt(path)
-        return _build_cards_from_entries(entries, commander_name,
-                                         by_id=by_id, by_name_lower=by_name_lower, by_norm=by_norm,
-                                         db_path_used=db_path_used, deck_path=path, owner_id=owner_id)
-
-    # default: JSON
-    with open(path,'r',encoding='utf-8') as f:
-        d = json.load(f)
-
-    cards: List[Card] = []
-
-    commander_entry = d.get('commander')
-    commander_card: Optional[dict] = None
-    if commander_entry:
-        commander_card = _resolve_entry(commander_entry, by_id, by_name_lower, by_norm, path, db_path_used)
-
-    for entry in d.get('cards', []):
-        cdata = _resolve_entry(entry, by_id, by_name_lower, by_norm, path, db_path_used)
-        if commander_card and cdata['id'] == commander_card['id']:
-            continue
-        cards.append(Card(
-            id=cdata['id'], name=cdata['name'], types=cdata['types'], mana_cost=cdata['mana_cost'],
-            power=cdata.get('power'), toughness=cdata.get('toughness'), text=cdata.get('text',''),
-            is_commander=False, color_identity=cdata.get('color_identity',[]), owner_id=owner_id, controller_id=owner_id
-        ))
-
-    commander_obj: Optional[Card] = None
-    if commander_card:
-        commander_obj = Card(
-            id=commander_card['id'], name=commander_card['name'], types=commander_card['types'],
-            mana_cost=commander_card['mana_cost'],
-            power=commander_card.get('power'), toughness=commander_card.get('toughness'),
-            text=commander_card.get('text',''), is_commander=False,
-            color_identity=commander_card.get('color_identity',[]),
-            owner_id=owner_id, controller_id=owner_id
-        )
 
     return cards, commander_obj
 
 def new_game():
     by_id, by_name_lower, by_norm, db_path_used = load_card_db()
-    p_cards, p_commander = load_deck(os.path.join('data','decks','Fynn The Fangbearer.txt'), by_id, by_name_lower, by_norm, db_path_used, 0)
+    p_cards, p_commander = load_deck(os.path.join('data','decks','reap_the_tides.json'), by_id, by_name_lower, by_norm, db_path_used, 0)
     a_cards, a_commander = load_deck(os.path.join('data','decks','draconic_domination.json'), by_id, by_name_lower, by_norm, db_path_used, 1)
     p = PlayerState(player_id=0, name='You', life=STARTING_LIFE, library=p_cards, commander=p_commander)
     a = PlayerState(player_id=1, name='AI', life=STARTING_LIFE, library=a_cards, commander=a_commander)
@@ -182,7 +131,7 @@ def new_game():
 def main():
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_W,SCREEN_H))
-    pygame.display.set_caption('MTG Commander â€“ Phase 1')
+    pygame.display.set_caption('MTG Commander – Phase 1')
     clock = pygame.time.Clock()
     game = new_game()
     ui = UIManager(game)
