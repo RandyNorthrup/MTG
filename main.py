@@ -184,8 +184,20 @@ def main():
     screen = pygame.display.set_mode((SCREEN_W,SCREEN_H))
     pygame.display.set_caption('MTG Commander â€“ Phase 1')
     clock = pygame.time.Clock()
+
+    # DeckBuilder integration
+    card_db_path = os.path.join('data','cards','card_db.json')
+    banlist_path = os.path.join('data','commander_banlist.txt')
+    try:
+        from deckbuilder.deckbuilder_ui import DeckBuilder
+        deckbuilder = DeckBuilder(card_db_path, banlist_path)
+    except Exception as e:
+        print(f"[WARN] Could not initialize DeckBuilder: {e}")
+        deckbuilder = None
+
     game = new_game()
     ui = UIManager(game)
+    ui.deckbuilder = deckbuilder
     ai = BasicAI(pid=1)
 
     while True:
