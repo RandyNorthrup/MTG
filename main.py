@@ -5,6 +5,8 @@ from engine.game_state import GameState, PlayerState
 from engine.card_engine import Card
 from ai.basic_ai import BasicAI
 from ui.ui_manager import UIManager
+from tools.deck_text_parser import parse_commander_txt
+
 
 # Legacy id aliases so older deck JSONs resolve against Scryfall DBs
 BASIC_ALIASES = {
