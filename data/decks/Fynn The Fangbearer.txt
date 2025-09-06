@@ -1,0 +1,71 @@
+1 Acidic Slime
+1 Ambush Viper
+1 Basilisk Collar
+1 Bow of Nylea
+1 Bushwhack
+1 Cankerbloom
+1 Contagion Clasp
+1 Contaminant Grafter
+1 Copper Longlegs
+1 Deadly Recluse
+1 Epic Confrontation
+1 Evolution Sage
+1 Expand the Sphere
+1 Explore
+1 Fang of Shigeki
+1 Fertile Thicket
+31 Forest
+1 Glistener Elf
+1 Glistening Sphere
+1 Gorgon Flail
+1 Gorgon's Head
+1 Grappling Hook
+1 Halana, Kessig Ranger
+1 Hard-Hitting Question
+1 Haunted Cloak
+1 Heir of the Wilds
+1 Hornet Queen
+1 Hot Soup
+1 Hunt the Weak
+1 Irresistible Prey
+1 Joraga Invocation
+1 Karn's Bastion
+1 Lace with Moonglove
+1 Managorger Hydra
+1 Marsh Viper
+1 Mirkwood Spider
+1 Narnam Renegade
+1 Nature's Way
+1 Noxious Revival
+1 Ohran Viper
+1 Pharika's Disciple
+1 Phyrexian Swarmlord
+1 Plague Myr
+1 Plaguemaw Beast
+1 Primal Might
+1 Provoke
+1 Rabid Bite
+1 Rogue's Passage
+1 Scytheclaw
+1 Sedge Scorpion
+1 Shamanic Revelation
+1 Skullwinder
+1 Sol Ring
+1 Spinebiter
+1 Strionic Resonator
+1 Swiftfoot Boots
+1 The Seedcore
+1 Thirsting Roots
+1 Thornweald Archer
+1 Toski, Bearer of Secrets
+1 Toxic Scorpion
+1 Trailblazer's Boots
+1 Underdark Basilisk
+1 Unnatural Restoration
+1 Vanguard's Shield
+1 Venomous Brutalizer
+1 Vial of Poison
+1 Virulent Sliver
+1 Wasteland Viper
+
+1 Fynn, the Fangbearer

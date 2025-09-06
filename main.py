@@ -6,7 +6,7 @@ from engine.card_engine import Card
 from ai.basic_ai import BasicAI
 from ui.ui_manager import UIManager
 
-# --- NEW: legacy aliases so old deck ids resolve cleanly ---
+# Legacy id aliases so older deck JSONs resolve against Scryfall DBs
 BASIC_ALIASES = {
     "basic_forest": "Forest",
     "basic_island": "Island",
@@ -36,19 +36,15 @@ def load_card_db() -> tuple[dict, dict, dict, str]:
     with open(path, 'r', encoding='utf-8') as f:
         raw = json.load(f)
 
-    # raw may be a list (most common) or an id->card dict.
     cards = list(raw.values()) if isinstance(raw, dict) else list(raw)
-
     by_id = { c['id']: c for c in cards }
 
-    # exact lowercase name map
     by_name_lower: dict[str, dict] = {}
     for c in cards:
         nm = c.get('name')
         if isinstance(nm, str):
             by_name_lower[nm.lower()] = c
 
-    # normalized name map (strip punctuation, collapse spaces, lowercase)
     def norm(s: str) -> str:
         return re.sub(r'[^a-z0-9]+', ' ', s.lower()).strip()
 
@@ -61,30 +57,22 @@ def load_card_db() -> tuple[dict, dict, dict, str]:
     return by_id, by_name_lower, by_norm, path
 
 def _resolve_entry(entry: str, by_id: dict, by_name_lower: dict, by_norm: dict, deck_path: str, db_path_used: str) -> dict:
-    """
-    Resolve a deck entry that could be an id, an exact name, or an underscore/simplified name.
-    """
-    # --- NEW: remap legacy aliases to canonical names first ---
     entry = BASIC_ALIASES.get(entry, entry)
     entry = CUSTOM_ALIASES.get(entry, entry)
 
-    # 1) direct id match
     if entry in by_id:
         return by_id[entry]
 
-    # 2) exact name (case-insensitive)
     c = by_name_lower.get(entry.lower())
     if c:
         return c
 
-    # 3) normalized name (handles underscores, punctuation, etc.)
     def norm(s: str) -> str:
         return re.sub(r'[^a-z0-9]+', ' ', s.lower()).strip()
     c = by_norm.get(norm(entry))
     if c:
         return c
 
-    # Not found → helpful error
     raise KeyError(
         f"Card '{entry}' not found in card DB.\n"
         f"Deck file: {deck_path}\n"
@@ -99,25 +87,22 @@ def load_deck(path: str, by_id: dict, by_name_lower: dict, by_norm: dict, db_pat
 
     cards: List[Card] = []
 
-    # Commander entry can be id OR name (or simplified underscore name)
     commander_entry = d.get('commander')
     commander_card: Optional[dict] = None
     if commander_entry:
         commander_card = _resolve_entry(commander_entry, by_id, by_name_lower, by_norm, path, db_path_used)
 
-    # Cards can be id OR name (or simplified underscore name)
     for entry in d.get('cards', []):
         cdata = _resolve_entry(entry, by_id, by_name_lower, by_norm, path, db_path_used)
-        # Skip adding the commander to the main 99; we'll build a separate Card object below
         if commander_card and cdata['id'] == commander_card['id']:
             continue
         cards.append(Card(
             id=cdata['id'], name=cdata['name'], types=cdata['types'], mana_cost=cdata['mana_cost'],
             power=cdata.get('power'), toughness=cdata.get('toughness'), text=cdata.get('text',''),
-            is_commander=False, color_identity=cdata.get('color_identity',[]), owner_id=owner_id, controller_id=owner_id
+            is_commander=False, color_identity=cdata.get('color_identity',[]),
+            owner_id=owner_id, controller_id=owner_id
         ))
 
-    # Build commander object last (if present)
     commander_obj: Optional[Card] = None
     if commander_card:
         commander_obj = Card(
@@ -155,7 +140,7 @@ def main():
             if event.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
 
-            # --- NEW: let the UI handle tabs & active panel events first ---
+            # Tabs & active panel
             ui.handle_event(event)
 
             if event.type == pygame.KEYDOWN:
@@ -172,7 +157,6 @@ def main():
                     if game.active_player == 0 and game.phase == 'COMBAT_DECLARE':
                         game.declare_attackers(0)
 
-            # Left click to play/cast from hand (Play tab only)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and ui.active_tab == 2:
                 ps = game.players[0]
                 if game.phase in ('MAIN1','MAIN2') and game.active_player == 0:

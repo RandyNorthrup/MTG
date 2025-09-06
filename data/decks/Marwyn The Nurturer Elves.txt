@@ -1,0 +1,80 @@
+1 Arcane Signet
+1 Bear Umbra
+1 Beast Whisperer
+1 Beast Within
+1 Beastmaster Ascension
+1 Blackblade Reforged
+1 Bloodline Pretender
+1 Campfire
+1 Canopy Tactician
+1 Case of the Locked Hothouse
+1 Cavern of Souls
+1 Champion of Lambholt
+1 Commander's Sphere
+1 Crown of Skemfar
+1 Deathbloom Gardener
+1 Dwynen, Gilt-Leaf Daen
+1 Elven Ambush
+1 Elven Bow
+1 Elvish Archdruid
+1 Elvish Mystic
+1 Elvish Promenade
+1 Encroaching Wastes
+1 Evolution Sage
+1 Evolution Witness
+22 Forest
+1 Forgotten Ancient
+1 Gaea's Gift
+1 Hidden Nursery
+1 Immaculate Magistrate
+1 Imperious Perfect
+1 Jagged-Scar Archers
+1 Joraga Treespeaker
+1 Konda's Banner
+1 Llanowar Tribe
+1 Magewright's Stone
+1 Masked Vandal
+1 Mikokoro, Center of the Sea
+1 Mosswort Bridge
+1 Narnam Renegade
+1 Naturalize
+1 Nesting Grounds
+1 Numa, Joraga Chieftain
+1 Opal Palace
+1 Oran-Rief, the Vastwood
+1 Path of Ancestry
+1 Patriar's Seal
+1 Pick Your Poison
+1 Reliquary Tower
+1 Retrieve
+1 Return to Nature
+1 Ring of Kalonia
+1 Rishkar, Peema Renegade
+1 Rishkar's Expertise
+1 Season of Renewal
+1 Shamanic Revelation
+1 Sharpshooter Elf
+1 Sigil of Valor
+1 Skullclamp
+1 Skyway Sniper
+1 Sol Ring
+1 Soul's Majesty
+1 Split the Spoils
+1 Springleaf Drum
+1 Swiftfoot Boots
+1 Sword of the Chosen
+1 Sylvan Messenger
+1 Tanuki Transplanter
+1 Thousand-Year Elixir
+1 Unnatural Growth
+1 Varis, Silverymoon Ranger
+1 Vastwood Surge
+1 Viridian Betrayers
+1 Viridian Corrupter
+1 Vitu-Ghazi Inspector
+1 Voice of the Woods
+1 Wirewood Channeler
+1 Wirewood Symbiote
+1 Wolverine Riders
+
+1 Marwyn, the Nurturer

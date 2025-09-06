@@ -1,4 +1,3 @@
-# engine/game_state.py
 from __future__ import annotations
 import random
 from dataclasses import dataclass, field
@@ -6,7 +5,7 @@ from typing import List, Dict, Optional
 
 from .card_engine import Card, Permanent, Zones, ActionResult
 from .stack import Stack, StackItem
-from .commander_rules import CommanderTracker  # uses tax_for(), note_cast(), add_damage(), lethal_from()
+from .commander_rules import CommanderTracker
 
 PHASES = [
     "UNTAP", "UPKEEP", "DRAW",
@@ -20,7 +19,7 @@ PHASES = [
 class PlayerState:
     player_id: int
     name: str
-    life: int = 40  # CR 103.4c – Commander starts at 40 life
+    life: int = 40
     mana: int = 0
 
     library: List[Card] = field(default_factory=list)
@@ -29,7 +28,6 @@ class PlayerState:
     graveyard: List[Card] = field(default_factory=list)
     exile: List[Card] = field(default_factory=list)
 
-    # Commander/command zone
     command: List[Card] = field(default_factory=list)
     commander: Optional[Card] = None
     commander_tracker: CommanderTracker = field(default_factory=CommanderTracker)
@@ -46,10 +44,6 @@ class PlayerState:
         self.mana = 0
 
     def find_playable(self) -> List[Card]:
-        """
-        Very-simplified: Lands are always playable (once per turn gate is enforced elsewhere),
-        spells are playable if total integer cost (base + commander tax when applicable) <= available mana.
-        """
         playable: List[Card] = []
         for c in self.hand:
             if "Land" in c.types:
@@ -57,8 +51,7 @@ class PlayerState:
             else:
                 total_cost = c.mana_cost
                 if c.is_commander:
-                    # Add commander tax per prior casts from command zone of THIS commander (CR 903.8)
-                    total_cost += self.commander_tracker.tax_for(c.id)
+                    total_cost += self.commander_tracker.tax_for(c.id)  # id is str
                 if total_cost <= self.mana:
                     playable.append(c)
         return playable
@@ -74,13 +67,9 @@ class GameState:
     land_played_this_turn: Dict[int, bool] = field(default_factory=dict)
 
     def other_player(self, pid: int) -> int:
-        return 1 - pid  # current build is 2-player only
+        return 1 - pid
 
     def setup(self):
-        """
-        Shuffle, move commander to command zone, draw 7, and reset once-per-turn land flag.
-        CR 103.2c puts commander into the command zone at start; CR 103.5 draws opening hand.
-        """
         for p in self.players:
             random.shuffle(p.library)
             if p.commander:
@@ -96,7 +85,6 @@ class GameState:
     def next_phase(self):
         self.phase_index = (self.phase_index + 1) % len(PHASES)
         if self.phase_index == 0:
-            # new turn
             self.turn += 1
             self.active_player = self.other_player(self.active_player)
             for p in self.players:
@@ -104,13 +92,11 @@ class GameState:
                     perm.summoning_sick = False
                 self.land_played_this_turn[p.player_id] = False
 
-        # Beginning phase hooks
         if self.phase == "UNTAP":
             for perm in self.players[self.active_player].battlefield:
                 perm.tapped = False
             self.players[self.active_player].reset_mana()
         elif self.phase == "DRAW":
-            # First player draw-step skipping of the very first turn is ignored in this simplified build.
             self.players[self.active_player].draw(1)
 
     def play_land(self, pid: int, card: Card) -> ActionResult:
@@ -131,7 +117,7 @@ class GameState:
             perm.tapped = True
             self.players[pid].add_mana(1)
 
-    def _pay_and_move_to_battlefield(self, ps: PlayerState, card: Card, total_cost: int):
+    def _pay_and_move_to_battlefield(self, ps: PlayerState, card: Card, total_cost: int) -> ActionResult:
         if total_cost > ps.mana:
             return ActionResult.ILLEGAL
         ps.mana -= total_cost
@@ -139,15 +125,9 @@ class GameState:
         return ActionResult.OK
 
     def cast_spell(self, pid: int, card: Card) -> ActionResult:
-        """
-        Very-simplified casting:
-          • If commander is in command zone, you can cast it with base cost + commander tax; move to battlefield.
-          • Non-commander creature: pay cost, move to battlefield.
-          • Non-commander sorcery: pay cost, put on stack; on resolution, apply a toy effect and put in graveyard.
-        """
         ps = self.players[pid]
 
-        # Cast commander from command zone (CR 903.6 & 903.8)
+        # Cast commander from command zone
         if card.is_commander and card in ps.command:
             total_cost = card.mana_cost + ps.commander_tracker.tax_for(card.id)
             result = self._pay_and_move_to_battlefield(ps, card, total_cost)
@@ -156,7 +136,7 @@ class GameState:
                 ps.commander_tracker.note_cast(card.id)
             return result
 
-        # Regular spells from hand
+        # Regular spells from hand only
         if card not in ps.hand:
             return ActionResult.ILLEGAL
 
@@ -173,7 +153,6 @@ class GameState:
             ps.hand.remove(card)
 
             def effect(game: GameState, item: StackItem):
-                # toy effects to keep demo running
                 if "Draw 2" in card.text:
                     ps.draw(2)
                 if "Deal 3" in card.text:
@@ -187,10 +166,6 @@ class GameState:
         return ActionResult.ILLEGAL
 
     def declare_attackers(self, pid: int):
-        """
-        Super-simplified combat: all eligible creatures attack the opposing player, no blocks.
-        We assign damage and track commander combat damage (CR 104.3j / 903.10).
-        """
         ps = self.players[pid]
         attackers: List[Permanent] = []
         for perm in ps.battlefield:
@@ -203,28 +178,16 @@ class GameState:
             for perm in attackers:
                 power = max(0, perm.card.power or 0)
                 total += power
-                # Track commander combat damage to this defender
                 if perm.card.is_commander and power > 0:
                     ps.commander_tracker.add_damage(defender.player_id, ps.player_id, power)
                 perm.tapped = True
-
             defender.life -= total
 
     def check_game_over(self) -> bool:
-        """
-        Ends the game if a player is at 0 or less life, or if any player has received 21+ combat damage
-        from the same commander (state-based action; CR 104.3b & 104.3j). In this simplified build,
-        we check after actions resolve or phases advance.
-        """
-        # Life loss
         if any(p.life <= 0 for p in self.players):
             return True
-
-        # Commander damage: check if either player has lethal commander damage from the opponent's commander
         for defender in self.players:
             attacker_owner_id = self.other_player(defender.player_id)
-            # lethal_from(def_pid, commander_owner_id)
             if self.players[attacker_owner_id].commander_tracker.lethal_from(defender.player_id, attacker_owner_id):
                 return True
-
         return False
