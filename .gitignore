@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+data/cards/input_bulk_default_cards.json

@@ -1,0 +1,14 @@
+{
+  "name": "Draconic Domination (Simplified)",
+  "commander": "the_ur_dragon",
+  "cards": [
+    "the_ur_dragon",
+    "mountain","mountain","mountain","mountain","mountain","mountain","mountain","mountain","mountain","mountain",
+    "mountain","mountain","mountain","mountain","mountain","mountain","mountain","mountain","mountain","mountain",
+    "forest","forest","forest","forest","forest","forest","forest","forest","forest","forest",
+    "island","island","island","island","island","island","island","island","island","island",
+    "dragonspeaker_shaman","dragonspeaker_shaman","dragonspeaker_shaman","dragonspeaker_shaman","dragonspeaker_shaman","dragonspeaker_shaman","dragonspeaker_shaman","dragonspeaker_shaman",
+    "thunderbreak_regent","thunderbreak_regent","thunderbreak_regent","thunderbreak_regent","thunderbreak_regent","thunderbreak_regent",
+    "lightning_bolt_plus","lightning_bolt_plus","lightning_bolt_plus","lightning_bolt_plus","lightning_bolt_plus","lightning_bolt_plus"
+  ]
+}
