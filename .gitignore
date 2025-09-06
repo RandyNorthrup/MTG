@@ -1,5 +1,14 @@
+# Python
 __pycache__/
 *.pyc
 .venv/
+.env
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Data (big files not needed in repo)
+data/cards/card_db_full.json
 data/cards/input_bulk_default_cards.json
+data/cards/*.zip
