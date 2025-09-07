@@ -1,4 +1,4 @@
-import json, sys, argparse, io
+import json, sys, argparse
 
 def load(path):
     with open(path, 'r', encoding='utf-8') as f:

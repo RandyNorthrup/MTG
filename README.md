@@ -1,46 +1,46 @@
-# MTG Commander (Phase 1 + Phase 2 Tools)
-A playable **Commander-format** prototype rebuilt on **Qt (PySide6)** for a flexible desktop UI (replacing the earlier Pygame shell). Phase 2 still includes full card database, deckbuilder, and legality checks.
+# MTG Commander (Prototype)
 
 ## Features
 - 1v1 Commander: 40 life, command zone & tax, commander damage
 - Zones: Library / Hand / Battlefield / Graveyard / Exile / Command
-- Turn engine: Untap → Upkeep → Draw → Main → Combat → Main2 → End
-- Basic AI: plays lands, casts spells, attacks
-- Qt UI: tabbed interface (Home / Decks / Play), scalable painting, hover highlight, commander cast tracking
-- Tools: Scryfall DB filter, text deck import, integrated Qt deckbuilder dialog
+- Turn engine: UNTAP → UPKEEP → DRAW → MAIN1 → (COMBAT: Begin / Declare Attackers / Declare Blockers / Damage / End) → MAIN2 → END → CLEANUP (auto‑chains through non‑priority steps)
+- Basic AI: plays lands, casts simple permanents, attacks
+- Qt UI: tabbed (Home / Decks / Play + Lobby), integrated deck editor
+- Tools: Scryfall filter, text deck (*.txt) import
 
 ## Quick Run
-```
+```bash
 python -m venv .venv
-# Windows: .venv\Scripts\activate   |  macOS/Linux: source .venv/bin/activate
+# activate env
 pip install -r requirements.txt
 python main.py
 ```
 
 ## Full Card Database (Scryfall)
-1. Download Scryfall default bulk (oracle) JSON to data/raw/.
-2. Generate:
-   ```
-   python tools/scryfall_filter.py data/raw/default-cards.json data/cards/card_db_full.json --verbose
-   ```
-3. The game auto-preferences card_db_full.json.
-
-## Deck Builder (Qt Dialog)
-Inside the app press D or:
-```
-python main.py --deck You=data/decks/Fynn\ The\ Fangbearer.txt
-```
-Or run only the deckbuilder dialog:
-```
-python -m deckbuilder.deckbuilder_ui
+```bash
+python tools/scryfall_filter.py data/raw/default-cards.json data/cards/card_db_full.json --verbose
 ```
 
-## Runtime Shortcuts (Main Window Focus)
-- Space: Resolve stack / advance phase
-- A: Declare attackers (player 0)
-- D: Open deckbuilder dialog
-- R: Reload player 0 custom_deck.json
-- S: Toggle scoreboard overlay
+## Deck Builder
+Press D in app or edit a text deck (e.g. data/decks/custom_deck.txt) then press R to reload.
+
+## Shortcuts
+Space: Resolve / advance phase
+A: Declare attackers (player 0)
+D: Deck builder
+R: Reload custom_deck.txt
+S: Toggle scoreboard
+L: Toggle phase logging
+H: Help
+ESC: Quit
+
+## Troubleshooting
+- Missing cards: regenerate card_db_full.json
+- Phase stuck: ensure game_state.ensure_progress exists (auto steps)  
+- Empty library draw: current simplified rules = loss check on next state update
+
+## Contributing
+Submit PRs with concise diffs; keep large generated JSON out of repo (.gitignore covers).
 - H: Help popup
 - L: Toggle phase logging
 - ESC / Ctrl+Q: Quit

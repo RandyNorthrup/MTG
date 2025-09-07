@@ -1,5 +1,5 @@
 import os
-from PySide6.QtWidgets import QWidget, QMenu, QDialog, QVBoxLayout, QLabel, QPushButton, QListWidget, QListWidgetItem, QHBoxLayout
+from PySide6.QtWidgets import QWidget, QMenu, QDialog, QVBoxLayout, QLabel, QPushButton, QListWidget, QListWidgetItem, QHBoxLayout, QMessageBox  # ADDED for warning/info dialogs
 from PySide6.QtGui import (QPainter, QMouseEvent, QPaintEvent, QPen, QColor,
                            QPixmap, QDrag, QDropEvent, QDragEnterEvent)
 from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QMimeData

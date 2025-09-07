@@ -12,11 +12,10 @@ from engine.game_state import GameState, PlayerState
 from ai.basic_ai import BasicAI
 from ui.ui_manager import PlayArea
 from image_cache import ensure_card_image  # added
-from engine.rules_engine import parse_and_attach, init_rules  # NEW
-from engine.combat import attach_combat  # NEW
-from engine.continuous import attach_continuous  # NEW
-from engine.mana import parse_mana_cost, GENERIC_KEY  # NEW for AI cost eval
+from engine.rules_engine import init_rules  # removed parse_and_attach (unused)
+from engine.mana import parse_mana_cost  # removed GENERIC_KEY (unused)
 from engine.lobby import LobbyServer  # NEW
+from engine.turn_manager import TurnManager  # NEW
 
 _NORMALIZE_RE = re.compile(r'[^a-z0-9]+')
 def _normalize_name(s: str) -> str:
@@ -179,8 +178,6 @@ def new_game(deck_specs=None, ai_enabled=True):
     game = GameState(players=players)
     game.setup()
     init_rules(game)  # already present
-    attach_combat(game)  # NEW: add combat API
-    attach_continuous(game)  # NEW continuous layer
     # Prewarm (fire-and-forget) images for current decks (commander + first N)
     for pl in game.players:
         if pl.commander:
@@ -191,8 +188,7 @@ def new_game(deck_specs=None, ai_enabled=True):
     return game, ai_players
 
 def build_ai_controllers(ai_ids):
-    ctrls = {pid: BasicAI(pid=pid) for pid in ai_ids}
-    return ctrls
+    return {pid: BasicAI(pid=pid) for pid in ai_ids}  # simplified
 
 def enhance_ai_controllers(game, ai_controllers):
     """
@@ -300,7 +296,6 @@ def enhance_ai_controllers(game, ai_controllers):
     def declare_attackers(ctrl, player):
         if not hasattr(game, 'combat'):
             return
-        # toggle all untapped creature permanents
         for perm in list(player.battlefield):
             card = getattr(perm, 'card', perm)
             if 'Creature' in card.types and not getattr(perm, 'tapped', False):
@@ -309,9 +304,12 @@ def enhance_ai_controllers(game, ai_controllers):
                 except Exception:
                     pass
         game.combat.attackers_committed()
-        # advance phase if engine doesn't auto-progress
-        if getattr(game, 'phase', '').upper() == 'COMBAT_DECLARE':
-            game.phase = 'COMBAT_BLOCK'
+        # Instead of setting game.phase directly, advance once if still in declare step
+        if getattr(game, 'phase', '').upper() == 'COMBAT_DECLARE' and hasattr(game, 'next_phase'):
+            try:
+                game.next_phase()
+            except Exception:
+                pass
 
     def assign_blockers(ctrl, player):
         if not hasattr(game, 'combat'):
@@ -319,7 +317,6 @@ def enhance_ai_controllers(game, ai_controllers):
         atk_map = game.combat.state.attackers
         if not atk_map:
             return
-        # assign each untapped creature to first attacker (one blocker each attacker)
         blockers_used = set()
         for perm in list(player.battlefield):
             if len(blockers_used) >= len(atk_map):
@@ -332,14 +329,25 @@ def enhance_ai_controllers(game, ai_controllers):
                     blockers_used.add(perm)
                 except Exception:
                     continue
-        # commit -> damage
-        if getattr(game, 'phase', '').upper() == 'COMBAT_BLOCK':
-            game.phase = 'COMBAT_DAMAGE'
+        # Progress through damage (and possibly end combat) without assigning to phase
+        if getattr(game, 'phase', '').upper() == 'COMBAT_BLOCK' and hasattr(game, 'next_phase'):
+            try:
+                game.next_phase()  # to COMBAT_DAMAGE
+            except Exception:
+                pass
             try:
                 game.combat.assign_and_deal_damage()
             except Exception:
                 pass
-            game.phase = 'MAIN2'
+            # Skip any intermediate combat end step if engine requires multiple advances
+            for _ in range(3):
+                if getattr(game, 'phase', '').upper() == 'MAIN2':
+                    break
+                if hasattr(game, 'next_phase'):
+                    try:
+                        game.next_phase()
+                    except Exception:
+                        break
 
     def end_main_if_nothing(ctrl, player):
         # attempt to move to next phase if no stack & nothing else to do
@@ -398,6 +406,13 @@ class MainWindow(QMainWindow):
         enhance_ai_controllers(game, self.ai_controllers)
         self.logging_enabled = not (args and args.no_log)
         self.play_area = PlayArea(game)
+        # NEW: ensure TurnManager attached (idempotent)
+        if not hasattr(self.game, 'turn_manager'):
+            try:
+                self.game.turn_manager = TurnManager(self.game)
+            except Exception as ex:
+                if self.logging_enabled:
+                    print(f"[TURNMGR][INIT][ERR] {ex}")
         # --- NEW lobby state attrs (must exist before building lobby UI) ---
         self._active_lobby_id = None
         self._in_game = True              # starts with provided game; lobby builder will flip to False
@@ -415,9 +430,6 @@ class MainWindow(QMainWindow):
         # Only run pre-game setup if we are actually in a game view now
         if self._in_game and len(self.game.players) > 1:
             QTimer.singleShot(50, self._initial_pregame_setup)
-
-        # NEW: human turn helpers
-        self._human_land_played_this_turn = False  # NEW
 
     # --- pre-game setup (first player + mulligans) ---
     def _initial_pregame_setup(self):
@@ -525,23 +537,6 @@ class MainWindow(QMainWindow):
         gvl = QVBoxLayout(game_wrap)
         gvl.setContentsMargins(0,0,0,0)
         gvl.addWidget(self.play_area)
-
-        # NEW: action bar (human controls)
-        from PySide6.QtWidgets import QHBoxLayout
-        act_bar = QHBoxLayout()
-        self.btn_draw = QPushButton("Draw")
-        self.btn_play_land = QPushButton("Play Land")
-        self.btn_cast = QPushButton("Cast Cheapest")
-        self.btn_pass = QPushButton("Pass Phase")
-        for b in (self.btn_draw, self.btn_play_land, self.btn_cast, self.btn_pass):
-            act_bar.addWidget(b)
-        act_bar.addStretch(1)
-        gvl.addLayout(act_bar)
-
-        self.btn_draw.clicked.connect(self._human_draw_button)
-        self.btn_play_land.clicked.connect(self._human_play_land_button)
-        self.btn_cast.clicked.connect(self._human_cast_button)
-        self.btn_pass.clicked.connect(self._human_pass_phase)
 
         self.play_stack.addWidget(lob_w)
         self.play_stack.addWidget(game_wrap)
@@ -876,142 +871,9 @@ class MainWindow(QMainWindow):
         self.deck_stats_label.setText(f"Cards: {total}  Commander: {self.current_commander or '-'}")
 
     # ---------------- NEW: Human turn helpers ----------------
-    def _ensure_turn_draw(self):
-        """
-        Auto draw 1 card for active player when reaching MAIN1 and not yet drawn.
-        Resets per player at UNTAP.
-        """
-        phase = self.game.phase.upper()
-        ap = self.game.active_player
-        player = self.game.players[ap]
-        if phase == 'MAIN1' and not getattr(player, '_drew_this_turn', False):
-            self._draw_card(player)
-            player._drew_this_turn = True
-            if self.logging_enabled:
-                print(f"[TURN] {player.name} drew for turn ({len(player.hand)} in hand)")
-
-    def _reset_turn_flags_if_needed(self):
-        if self.game.phase.upper() == 'UNTAP':
-            # Clear per-player draw markers & per-turn land usage
-            for pl in self.game.players:
-                if hasattr(pl, '_drew_this_turn'):
-                    delattr(pl, '_drew_this_turn')
-            self._human_land_played_this_turn = False
-
-    def _draw_card(self, player):
-        if player.library:
-            player.hand.append(player.library.pop(0))
-        else:
-            if self.logging_enabled:
-                print(f"[DRAW] {player.name} would mill out (library empty)")
-
-    # ---- land / cast helpers (mirrors AI minimal logic) ----
-    def _human_available_untapped_lands(self):
-        lands = []
-        you = self.game.players[0]
-        for perm in getattr(you, 'battlefield', []):
-            c = getattr(perm, 'card', perm)
-            if 'Land' in c.types and not getattr(perm, 'tapped', False):
-                lands.append(perm)
-        return lands
-
-    def _human_tap_for_generic(self, need):
-        tapped = 0
-        you_id = 0
-        for perm in list(self._human_available_untapped_lands()):
-            if tapped >= need:
-                break
-            try:
-                if hasattr(self.game, 'tap_for_mana'):
-                    self.game.tap_for_mana(you_id, perm)
-                else:
-                    perm.tapped = True
-            except Exception:
-                perm.tapped = True
-            tapped += 1
-        return tapped >= need
-
-    def _human_card_total_cost(self, card):
-        from engine.mana import parse_mana_cost
-        cost_dict = parse_mana_cost(getattr(card, 'mana_cost_str', ''))
-        if not cost_dict:
-            if isinstance(card.mana_cost, int):
-                return card.mana_cost
-            try:
-                return int(card.mana_cost)
-            except Exception:
-                return 0
-        return sum(cost_dict.values())
-
-    def _human_play_first_land(self):
-        if self._human_land_played_this_turn:
-            return
-        you = self.game.players[0]
-        for card in list(you.hand):
-            if 'Land' in card.types:
-                # Prefer engine API
-                try:
-                    if hasattr(self.game, 'play_land'):
-                        self.game.play_land(0, card)
-                    else:
-                        you.hand.remove(card)
-                        if hasattr(self.game, 'enter_battlefield'):
-                            self.game.enter_battlefield(0, card)
-                        else:
-                            you.battlefield.append(type("Perm", (), {"card": card, "tapped": False})())
-                    self._human_land_played_this_turn = True
-                    if self.logging_enabled:
-                        print(f"[LAND] Played {card.name}")
-                    break
-                except Exception as ex:
-                    if self.logging_enabled:
-                        print(f"[LAND][ERR] {ex}")
-                break
-
-    def _human_cast_cheapest(self):
-        you = self.game.players[0]
-        # Gather castable (simple permanent spells)
-        spells = [c for c in list(you.hand) if 'Land' not in c.types]
-        if not spells:
-            return
-        spells.sort(key=self._human_card_total_cost)
-        for card in spells:
-            cost = self._human_card_total_cost(card)
-            if cost == 0:
-                try:
-                    self.game.cast_spell(0, card)
-                    if self.logging_enabled:
-                        print(f"[CAST] {card.name} (0)")
-                    return
-                except Exception:
-                    continue
-            if len(self._human_available_untapped_lands()) >= cost and self._human_tap_for_generic(cost):
-                try:
-                    self.game.cast_spell(0, card)
-                    if self.logging_enabled:
-                        print(f"[CAST] {card.name} ({cost})")
-                    return
-                except Exception as ex:
-                    if self.logging_enabled:
-                        print(f"[CAST][FAIL] {card.name}: {ex}")
-        # no success
-
-    # ---- Button callbacks ----
-    def _human_draw_button(self):
-        self._draw_card(self.game.players[0])
-        if self.logging_enabled:
-            print(f"[DRAW] Manual draw -> {len(self.game.players[0].hand)} in hand")
-
-    def _human_play_land_button(self):
-        self._human_play_first_land()
-
-    def _human_cast_button(self):
-        self._human_cast_cheapest()
-
-    def _human_pass_phase(self):
-        if hasattr(self.game, 'next_phase'):
-            self.game.next_phase()
-            self._log_phase()
+    # (Removed unused manual human action helpers & buttons)
+    # _reset_turn_flags_if_needed / _draw_card / _human_* methods removed
+    # hotkeys still allow SPACE / A etc.
 
     def keyPressEvent(self, e):
         # Global hotkeys
@@ -1043,14 +905,12 @@ class MainWindow(QMainWindow):
                 self.play_area.update()
 
     def _maybe_ai_step(self):
-        # NEW: reset flags & ensure auto draw
-        self._reset_turn_flags_if_needed()
-        self._ensure_turn_draw()
-        # Skip if game over already or incomplete player set
+        # Removed call to _reset_turn_flags_if_needed (deleted)
+        if hasattr(self.game, 'ensure_progress'):
+            self.game.ensure_progress()
         if self._ai_disabled_after_game:
             return
         if len(self.game.players) < 2:
-            # Just keep UI responsive without game over logic
             self.play_area.update()
             return
         # Basic AI only for its controller & relevant phases
@@ -1059,11 +919,17 @@ class MainWindow(QMainWindow):
                 self.ai_controllers[self.game.active_player].take_turn(self.game)
             except Exception as ex:
                 print(f"[AI][ERR] {ex}")
+        if hasattr(self.game, 'turn_manager'):
+            try:
+                self.game.turn_manager.tick()
+            except Exception as ex:
+                if self.logging_enabled:
+                    print(f"[TURNMGR][ERR] {ex}")
         self.play_area.update()
         # NEW: resolve any queued triggered abilities
         if hasattr(self.game, 'rules_engine'):
             self.game.rules_engine.process_trigger_queue()
-        if hasattr(self.game, 'continuous'):  # NEW recompute
+        if hasattr(self.game, 'continuous'):
             self.game.continuous.recompute()
 
     def _deck_editor_state_init(self):

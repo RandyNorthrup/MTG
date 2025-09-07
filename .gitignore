@@ -18,15 +18,11 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Data (big files not needed in repo)
+# Data (large / generated)
 data/cards/card_db_full.json
 data/cards/input_bulk_default_cards.json
 data/cards/*.zip
 
-# If using Git LFS for curated JSONs, ensure:
-# git lfs track "data/cards/*.json"
-# (Then commit .gitattributes)
-
-# Test / type caches
+# Type / test cache
 .pytest_cache/
 .mypy_cache/
