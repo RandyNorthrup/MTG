@@ -1,8 +1,10 @@
 ﻿import sys, os, json, re, argparse
+import random  # ADDED for shuffling & random bottom selection
 from PySide6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
     QVBoxLayout, QLabel, QPushButton, QMessageBox, QListWidget, QListWidgetItem,
     QHBoxLayout, QLineEdit, QStackedWidget, QSplitter,
-    QGridLayout, QListView, QSpinBox, QGroupBox, QFrame, QCheckBox)  # ADDED widgets
+    QGridLayout, QListView, QSpinBox, QGroupBox, QFrame, QCheckBox,
+    QFileDialog)  # ADDED QFileDialog
 from PySide6.QtCore import QTimer, Qt, QSize  # ADDED QSize
 from PySide6.QtGui import QPixmap, QPainter
 from config import *
@@ -11,6 +13,12 @@ from engine.game_controller import GameController
 from ui.ui_manager import PlayArea              # CHANGED: direct import (no fallback)
 from image_cache import ensure_card_image       # CHANGED: direct import (no fallback)
 from engine.rules_engine import init_rules      # CHANGED: direct import (no fallback)
+from ai.ai_helpers import (build_default_deck_specs, collect_ai_player_ids, add_ai_player_pending)  # ADDED
+from ui.home_tab import build_home_tab                     # ADDED
+from ui.decks_tab import DecksTabManager                   # ADDED
+from ui.play_tab import build_play_stack                   # ADDED
+from ui.settings_tab import SettingsTabManager             # ADDED
+from ui.phase_ui import update_phase_ui as _phase_update   # ADDED
 
 try:
     from mtgsdk import Card as MTGSDKCard  # type: ignore  # suppress pylance missing import
@@ -302,11 +310,9 @@ def new_game(deck_specs=None, ai_enabled=True):
         elif deck_files:
             auto_player_deck = deck_files[0]
     if not deck_specs:
-        deck_specs = [
-            ("You", auto_player_deck, False),
-            ("AI", auto_ai_deck, True if ai_enabled else False)
-        ]
-        print(f"[AUTO-DECK] Player0={os.path.basename(auto_player_deck)}  AI={os.path.basename(auto_ai_deck)}")
+        deck_specs = build_default_deck_specs(auto_player_deck, auto_ai_deck, ai_enabled)  # CHANGED
+        print(f"[AUTO-DECK] Player0={os.path.basename(auto_player_deck)}"
+              f"{'  AI='+os.path.basename(auto_ai_deck) if ai_enabled and len(deck_specs) > 1 else ''}")
     banlist = load_banlist(os.path.join('data','commander_banlist.txt'))
     players = []
     for pid, (name, path, use_ai) in enumerate(deck_specs):
@@ -338,155 +344,8 @@ def new_game(deck_specs=None, ai_enabled=True):
             ensure_card_image(pl.commander.id)
         for c in list(pl.library)[:25]:
             ensure_card_image(c.id)
-    ai_players = {pid for pid, (_, _, ai_flag) in enumerate(deck_specs) if ai_flag and ai_enabled}
+    ai_players = collect_ai_player_ids(deck_specs, ai_enabled)  # CHANGED
     return game, ai_players
-
-class ScaledBackground(QWidget):  # NEW
-    def __init__(self, img_path):
-        super().__init__()
-        self._pix = QPixmap(img_path)
-
-    def paintEvent(self, ev):
-        if self._pix.isNull():
-            return
-        p = QPainter(self)
-        # Stretch to exact widget size (no aspect ratio preservation per prior request)
-        p.drawPixmap(self.rect(), self._pix)
-
-class LobbyWidget(QWidget):
-    """
-    Simple local lobby mock:
-      - Left: match groups (static sample entries)
-      - Right: player deck (commander + main deck list) read-only
-    """
-    def __init__(self, main_win: 'MainWindow'):
-        super().__init__()
-        self.main_win = main_win
-        root = QHBoxLayout(self)
-        root.setContentsMargins(4,4,4,4)
-
-        splitter = QSplitter()
-        root.addWidget(splitter)
-
-        # LEFT: Matches
-        left = QWidget()
-        lv = QVBoxLayout(left); lv.setContentsMargins(0,0,0,0)
-        self.match_list = QListWidget()
-        self.match_list.setSelectionMode(QListWidget.SingleSelection)
-        lv.addWidget(QLabel("Open Matches"))
-        lv.addWidget(self.match_list, 1)
-
-        btn_row = QHBoxLayout()
-        self.btn_join = QPushButton("Join")
-        self.btn_create = QPushButton("Create")
-        # NEW pending queue controls
-        self.btn_add_ai = QPushButton("Add AI")
-        self.btn_start = QPushButton("Start Game")
-        self.btn_cancel = QPushButton("Cancel")
-        btn_row.addWidget(self.btn_join)
-        btn_row.addWidget(self.btn_create)
-        btn_row.addWidget(self.btn_add_ai)
-        btn_row.addWidget(self.btn_start)
-        btn_row.addWidget(self.btn_cancel)
-        lv.addLayout(btn_row)
-
-        self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color:#bbb;font-size:11px;")
-        lv.addWidget(self.status_lbl)
-
-        # RIGHT: Deck panel
-        right = QWidget()
-        rv = QVBoxLayout(right); rv.setContentsMargins(0,0,0,0)
-        rv.addWidget(QLabel("Your Deck (Commander + 99)"))
-        self.deck_list = QListWidget()
-        self.deck_list.setAlternatingRowColors(True)
-        rv.addWidget(self.deck_list, 1)
-        self.deck_hint = QLabel("")
-        self.deck_hint.setStyleSheet("color:#999;font-size:11px;")
-        rv.addWidget(self.deck_hint)
-
-        splitter.addWidget(left)
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-
-        self.btn_join.clicked.connect(self._join_clicked)
-        self.btn_create.clicked.connect(self._create_clicked)
-        self.btn_add_ai.clicked.connect(self._add_ai_clicked)
-        self.btn_start.clicked.connect(self._start_clicked)
-        self.btn_cancel.clicked.connect(self._cancel_clicked)
-
-        # HIDE join (no fake matches now)
-        self.btn_join.setVisible(False)
-        # NEW: initial disabled state for pending controls
-        for b in (self.btn_add_ai, self.btn_start, self.btn_cancel):
-            b.setEnabled(False)
-
-        self._populate_matches()
-        self.refresh_deck()
-
-    def _populate_matches(self):
-        # Removed fake sample brackets; show empty state
-        self.match_list.clear()
-        self.status_lbl.setText("No open matches. Press Create to start a local game.")
-
-    def refresh_deck(self):
-        self.deck_list.clear()
-        game = self.main_win.game
-        if not game or not game.players:
-            return
-        p0 = game.players[0]
-        total = 0
-        if p0.commander:
-            self.deck_list.addItem(f"[Commander] {p0.commander.name}")
-            total += 1
-        for c in p0.library:
-            self.deck_list.addItem(c.name)
-            total += 1
-        self.deck_hint.setText(f"{total} cards listed.")
-        self.deck_list.scrollToTop()
-
-    def _join_clicked(self):
-        cur = self.match_list.currentItem()
-        if not cur:
-            self.status_lbl.setText("Select a match/player row first.")
-            return
-        self.main_win._enter_match_from_lobby(join_existing=True)
-
-    def _create_clicked(self):
-        # NEW: start pending match instead of immediate game start
-        self.main_win._create_pending_match()
-
-    # NEW: button handlers for pending queue
-    def _add_ai_clicked(self):
-        self.main_win._add_ai_player_pending()
-
-    def _start_clicked(self):
-        self.main_win._start_pending_match()
-
-    def _cancel_clicked(self):
-        self.main_win._cancel_pending_match()
-
-    # NEW: update UI for pending state
-    def sync_pending_controls(self, active: bool):
-        self.btn_add_ai.setEnabled(active and len(self.main_win.game.players) < 4)
-        self.btn_start.setEnabled(active and len(self.main_win.game.players) >= 1)
-        self.btn_cancel.setEnabled(active)
-        self.btn_create.setEnabled(not active)
-        self.status_lbl.setText(
-            "Waiting for players... ({}/4). Add AI or Start Game.".format(len(self.main_win.game.players))
-            if active else "No open matches. Press Create to start a local game."
-        )
-        self._render_pending_player_list(active)
-
-    def _render_pending_player_list(self, active: bool):
-        if not active:
-            self._populate_matches()
-            return
-        self.match_list.clear()
-        for pl in self.main_win.game.players:
-            tag = " (AI)" if pl.player_id in getattr(self.main_win.controller, 'ai_controllers', {}) else ""
-            self.match_list.addItem(f"{pl.player_id+1}. {pl.name}{tag}")
 
 class MainWindow(QMainWindow):
     def __init__(self, game, ai_ids, args):
@@ -498,415 +357,104 @@ class MainWindow(QMainWindow):
         self.play_area = PlayArea(self.game)
         if hasattr(self.play_area, 'enable_drag_and_drop'):
             self.play_area.enable_drag_and_drop()
-        # REMOVED: manual TurnManager creation & self.logging_enabled direct member (controller handles it)
-        self._active_lobby_id = None
-        self._phase_timer = QTimer(self)
-        self._phase_timer.timeout.connect(self._maybe_ai_step)
-        self._phase_timer.start(400)
-        self.controller.log_phase()
+        # REMOVED early phase logging (was: self.controller.log_phase())
         # Backward compat: mirror logging flag (read-only alias expectation)
         self.logging_enabled = self.controller.logging_enabled
-        self.tabs = QTabWidget()                           # ADDED
-        self._deck_editor_state_init()                     # ADDED
-        self._init_tabs()                                  # ADDED
-        self.setCentralWidget(self.tabs)                   # ADDED
+        self.tabs = QTabWidget()
+        # REMOVE: old deck/state init calls moved into managers
+        self._init_tabs()            # now modular
+        self.setCentralWidget(self.tabs)
         self._debug_win = None                             # ADDED: debug window handle
+        self._settings_tab = None                 # ADDED: settings tab handle
+        self._settings_tab_index = None           # ADDED: index cache
+        self._selected_settings_image = None      # ADDED: current image path
+        _phase_update(self)                   # replaces self._update_phase_ui()
+        self._opening_sequence_done = False
+        self._match_started = False          # ADDED: guard so enter_match only once
 
     # Backward compatibility helper (old code maybe toggles self.logging_enabled)
     def set_logging_enabled(self, value: bool):
         self.controller.logging_enabled = bool(value)
         self.logging_enabled = self.controller.logging_enabled
 
-    # ADDED: deck editor state holder
-    def _deck_editor_state_init(self):
-        # existing simple state replaced / extended
-        self.current_deck_path = os.path.join('data', 'decks', 'custom_deck.txt')
-        self.deck_builder_initialized = False
-        self.deck_main = {}        # name -> (card_obj, count)
-        self.deck_commander = None
-        self.deck_counts = {"lands":0,"creatures":0,"other":0,"total":0}
-
     # ADDED: build tabs (Home, Decks, Play)
-    def _init_tabs(self):
-        home_bg = os.path.join('data', 'images', 'home_bg.png')
-        if os.path.exists(home_bg):
-            home = ScaledBackground(home_bg)
-        else:
-            home = QWidget()
-        hv = QVBoxLayout(home); hv.setContentsMargins(0,0,0,0); hv.addStretch(1)
+    def _init_tabs(self):  # REPLACED
+        home = build_home_tab(self)
         self.tabs.addTab(home, "Home")
-        self.tabs.addTab(self._build_decks_tab(), "Decks")
+        self.decks_manager = DecksTabManager(self)
+        self.tabs.addTab(self.decks_manager.build_tab(), "Decks")
+        # play stack
+        self.play_stack, self.lobby_widget = build_play_stack(self)
         play_tab = QWidget()
         pv = QVBoxLayout(play_tab); pv.setContentsMargins(0,0,0,0)
-        pv.addWidget(self._build_play_tab_stack())
+        pv.addWidget(self.play_stack)
         self.tabs.addTab(play_tab, "Play")
 
-    # ADDED: decks tab
-    def _build_decks_tab(self):
-        if not self.deck_builder_initialized:
-            self._init_deck_builder_state()
-        root = QWidget()
-        layout = QHBoxLayout(root); layout.setContentsMargins(4,4,4,4); layout.setSpacing(6)
+    # SETTINGS open wrapper (old body removed)
+    def _open_settings_tab(self):  # REPLACED
+        if not self.settings_manager:
+            self.settings_manager = SettingsTabManager(self)
+        self.settings_manager.open()
 
-        splitter = QSplitter()
-        layout.addWidget(splitter)
+    # Deck builder refresh wrapper (compat with F5 / old calls)
+    def _refresh_deck_tab(self):   # REPLACED
+        if hasattr(self, 'decks_manager'):
+            self.decks_manager.refresh()
 
-        # LEFT FILTER PANEL
-        filt = QWidget()
-        fv = QVBoxLayout(filt); fv.setContentsMargins(0,0,0,0); fv.setSpacing(4)
+    # Commander selection wrappers (if external code still calls)
+    def _set_commander_from_selection(self):  # REPLACED
+        self.decks_manager._set_commander_from_selection()
 
-        self.card_search_box = QLineEdit()
-        self.card_search_box.setPlaceholderText("Search card name...")
-        self.card_search_box.returnPressed.connect(self._apply_card_filters)
-        fv.addWidget(self.card_search_box)
+    def _clear_commander(self):  # REPLACED
+        self.decks_manager._clear_commander()
 
-        color_row = QHBoxLayout()
-        self.color_checks = {}
-        for sym, tip in zip("WUBRG", ["White","Blue","Black","Red","Green"]):
-            cb = QCheckBox(sym)
-            cb.setToolTip(tip)
-            cb.stateChanged.connect(self._apply_card_filters)
-            self.color_checks[sym] = cb
-            color_row.addWidget(cb)
-        color_row.addStretch(1)
-        fv.addLayout(color_row)
-
-        self.type_checks = {}
-        type_row = QGridLayout()
-        cand_types = ["Creature","Artifact","Enchantment","Instant","Sorcery","Planeswalker","Land"]
-        for i,t in enumerate(cand_types):
-            cb = QCheckBox(t)
-            cb.stateChanged.connect(self._apply_card_filters)
-            self.type_checks[t] = cb
-            type_row.addWidget(cb, i//2, i%2)
-        fv.addLayout(type_row)
-
-        btn_filter = QPushButton("Apply Filters")
-        btn_filter.clicked.connect(self._apply_card_filters)
-        fv.addWidget(btn_filter)
-
-        fv.addStretch(1)
-
-        splitter.addWidget(filt)
-
-        # RIGHT: MAIN PANEL (Vertical)
-        right = QWidget()
-        rv = QVBoxLayout(right); rv.setContentsMargins(0,0,0,0); rv.setSpacing(4)
-
-        # Top controls
-        ctrl_row = QHBoxLayout()
-        self.add_qty_spin = QSpinBox()
-        self.add_qty_spin.setRange(1,4)
-        self.add_qty_spin.setValue(1)
-        ctrl_row.addWidget(QLabel("Qty"))
-        ctrl_row.addWidget(self.add_qty_spin)
-        self.btn_add_selected = QPushButton("Add Selected")
-        self.btn_add_selected.clicked.connect(self._add_selected_card)
-        ctrl_row.addWidget(self.btn_add_selected)
-        self.btn_clear_filters = QPushButton("Reset Filters")
-        self.btn_clear_filters.clicked.connect(self._reset_card_filters)
-        ctrl_row.addWidget(self.btn_clear_filters)
-        ctrl_row.addStretch(1)
-        rv.addLayout(ctrl_row)
-
-        # Card gallery
-        self.card_gallery = QListWidget()
-        self.card_gallery.setViewMode(QListView.IconMode)
-        self.card_gallery.setResizeMode(QListWidget.Adjust)
-        self.card_gallery.setMovement(QListWidget.Static)
-        self.card_gallery.setIconSize(QSize(144, 200))  # CHANGED (Qt.QSize -> QSize)
-        self.card_gallery.setSpacing(8)
-        self.card_gallery.itemDoubleClicked.connect(lambda _: self._add_selected_card(double_click=True))
-        rv.addWidget(self.card_gallery, 3)
-
-        # Commander + Deck list split
-        lower_split = QSplitter()
-        lower_split.setOrientation(Qt.Horizontal)
-
-        # Commander panel
-        cmd_panel = QGroupBox("Commander")
-        cv = QVBoxLayout(cmd_panel); cv.setContentsMargins(6,6,6,6); cv.setSpacing(4)
-        self.cmd_img = QLabel()
-        self.cmd_img.setFixedSize(180,250)
-        self.cmd_img.setStyleSheet("background:#222;border:1px solid #444;")
-        self.cmd_img.setAlignment(Qt.AlignCenter)
-        cv.addWidget(self.cmd_img)
-        self.cmd_name_lbl = QLabel("<none>")
-        self.cmd_name_lbl.setStyleSheet("color:#bbb;")
-        cv.addWidget(self.cmd_name_lbl)
-        btn_set_cmd = QPushButton("Set From Selection")
-        btn_set_cmd.clicked.connect(self._set_commander_from_selection)
-        cv.addWidget(btn_set_cmd)
-        btn_clear_cmd = QPushButton("Clear Commander")
-        btn_clear_cmd.clicked.connect(self._clear_commander)
-        cv.addWidget(btn_clear_cmd)
-        cv.addStretch(1)
-        lower_split.addWidget(cmd_panel)
-
-        # Deck list panel
-        deck_panel = QGroupBox("Deck (Main)")
-        dv = QVBoxLayout(deck_panel); dv.setContentsMargins(6,6,6,6); dv.setSpacing(4)
-        self.deck_list_widget = QListWidget()
-        self.deck_list_widget.itemDoubleClicked.connect(self._remove_deck_entry)
-        dv.addWidget(self.deck_list_widget, 1)
-
-        # Summary
-        sum_row = QHBoxLayout()
-        self.summary_lbl = QLabel("")
-        self.summary_lbl.setStyleSheet("font:11px 'Consolas';")
-        sum_row.addWidget(self.summary_lbl, 1)
-        btn_remove_sel = QPushButton("Remove Selected")
-        btn_remove_sel.clicked.connect(self._remove_deck_entry)
-        sum_row.addWidget(btn_remove_sel)
-        dv.addLayout(sum_row)
-        lower_split.addWidget(deck_panel)
-
-        lower_split.setStretchFactor(0,0)
-        lower_split.setStretchFactor(1,1)
-        rv.addWidget(lower_split, 2)
-
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0,0)
-        splitter.setStretchFactor(1,1)
-
-        # initial populate
-        self._populate_card_gallery()
-        self._refresh_deck_builder_lists()
-        self._update_deck_summary()
-
-        return root
-
-    # --- NEW: deck builder helpers ---
-    def _init_deck_builder_state(self):
-        # Load DB (already loaded globally)
-        self._deck_builder_db = load_card_db()[1]  # by_name_lower for filtering fast
-        self.deck_builder_initialized = True
-
-    def _reset_card_filters(self):
-        self.card_search_box.clear()
-        for cb in self.color_checks.values():
-            cb.setChecked(False)
-        for cb in self.type_checks.values():
-            cb.setChecked(False)
-        self._apply_card_filters()
-
-    def _apply_card_filters(self):
-        self._populate_card_gallery()
-
-    def _populate_card_gallery(self):
-        if not self.deck_builder_initialized:
+    # Phase UI wrapper (keep old name)
+    def _update_phase_ui(self):  # REPLACED
+        # CHANGED: display "Awaiting Roll" until first player decided
+        if not getattr(self.controller, 'first_player_decided', False):
+            bar = getattr(self.play_area, 'phase_progress_bar', None)
+            if bar is not None:
+                try:
+                    base_fmt = getattr(bar, '_orig_format', None)
+                    if base_fmt is None:
+                        base_fmt = bar.format() if hasattr(bar, 'format') else "%v/%m"
+                        if not base_fmt:
+                            base_fmt = "%v/%m"
+                        bar._orig_format = base_fmt
+                    bar.setFormat(f"Awaiting Roll - {base_fmt}")
+                except Exception:
+                    pass
+            lbl = getattr(self.play_area, 'phase_label', None)
+            if lbl is not None:
+                try:
+                    base_txt = getattr(lbl, '_orig_text', None)
+                    if base_txt is None:
+                        base_txt = lbl.text()
+                        lbl._orig_text = base_txt
+                    lbl.setText(f"Awaiting Roll - {base_txt}")
+                except Exception:
+                    pass
             return
-        term = self.card_search_box.text().strip().lower()
-        color_filter = {c for c,cb in self.color_checks.items() if cb.isChecked()}
-        type_filter = {t for t,cb in self.type_checks.items() if cb.isChecked()}
-        by_name_lower = load_card_db()[1]  # name->card dict
-        items = []
-        for name, card in by_name_lower.items():
-            if term and term not in name:
-                continue
-            # types / colors
-            if type_filter:
-                if not any(t in card.get('types',[]) for t in type_filter):
-                    continue
-            if color_filter:
-                cid = set(card.get('color_identity', []))
-                if not cid & color_filter:
-                    continue
-            items.append(card)
-        # Limit (performance)
-        items = items[:400]
-        self.card_gallery.clear()
-        for c in items:
-            ensure_card_image(c['id'])
-            li = QListWidgetItem(c['name'])
-            li.setData(Qt.UserRole, c)
-            img_path = os.path.join('data','img_cache', f"{c['id']}.jpg")
-            if os.path.exists(img_path):
-                pm = QPixmap(img_path).scaled(144,200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                li.setIcon(pm)
-            self.card_gallery.addItem(li)
+        # ...existing code (original _phase_update logic still runs afterwards if roll decided)...
+        _phase_update(self)
 
-    def _add_selected_card(self, double_click=False):
-        sel = self.card_gallery.selectedItems()
-        if not sel:
-            return
-        card = sel[0].data(Qt.UserRole)
-        qty = self.add_qty_spin.value()
-        # Commander cannot be added to main if currently commander (skip duplicate)
-        if self.deck_commander and card['id'] == self.deck_commander['id']:
-            return
-        # Singleton rule (basic lands exempt)
-        entry = self.deck_main.get(card['name'])
-        if entry:
-            if not self._is_basic_land(card) and entry[1] >= 1:
-                # skip (commander singleton)
-                return
-            entry = (entry[0], entry[1]+qty)
-        else:
-            entry = (card, qty)
-        self.deck_main[card['name']] = entry
-        self._refresh_deck_builder_lists()
-        self._recompute_deck_counts()
-        self._update_deck_summary()
-
-    def _add_card_by_name(self, name, qty=1):
-        by_name_lower = load_card_db()[1]
-        c = by_name_lower.get(name.lower())
-        if not c:
-            return
-        for _ in range(qty):
-            self._add_card_object(c)
-
-    def _add_card_object(self, c):
-        # internal add single
-        entry = self.deck_main.get(c['name'])
-        if entry:
-            if not self._is_basic_land(c) and entry[1] >= 1:
-                return
-            self.deck_main[c['name']] = (entry[0], entry[1]+1)
-        else:
-            self.deck_main[c['name']] = (c,1)
-
-    def _remove_deck_entry(self, *_):
-        sel = self.deck_list_widget.selectedItems()
-        if not sel:
-            return
-        it = sel[0]
-        name = it.data(Qt.UserRole)
-        if name in self.deck_main:
-            card, ct = self.deck_main[name]
-            if ct <= 1:
-                del self.deck_main[name]
-            else:
-                self.deck_main[name] = (card, ct-1)
-        self._refresh_deck_builder_lists()
-        self._recompute_deck_counts()
-        self._update_deck_summary()
-
-    def _refresh_deck_builder_lists(self):
-        self.deck_list_widget.clear()
-        # Sort by type grouping (Creature, Land, Other)
-        def key(entry):
-            c, ct = entry
-            types = c.get('types', [])
-            if 'Land' in types: grp = 0
-            elif 'Creature' in types: grp = 1
-            else: grp = 2
-            return (grp, c['name'])
-        for name, (c, ct) in sorted(self.deck_main.items(), key=key):
-            disp = f"{ct}x {c['name']}"
-            li = QListWidgetItem(disp)
-            li.setData(Qt.UserRole, name)
-            self.deck_list_widget.addItem(li)
-        # Commander image
-        if self.deck_commander:
-            ensure_card_image(self.deck_commander['id'])
-            pth = os.path.join('data','img_cache', f"{self.deck_commander['id']}.jpg")
-            if os.path.exists(pth):
-                pm = QPixmap(pth).scaled(180,250, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.cmd_img.setPixmap(pm)
-            self.cmd_name_lbl.setText(self.deck_commander['name'])
-        else:
-            self.cmd_img.clear()
-            self.cmd_name_lbl.setText("<none>")
-
-    def _recompute_deck_counts(self):
-        lands = creatures = other = 0
-        total = 0
-        for c, ct in (v for v in self.deck_main.values()):
-            total += ct
-            types = c.get('types', [])
-            if 'Land' in types:
-                lands += ct
-            elif 'Creature' in types:
-                creatures += ct
-            else:
-                other += ct
-        self.deck_counts.update({"lands":lands,"creatures":creatures,"other":other,"total":total})
-
-    def _update_deck_summary(self):
-        # Commander deck: 99 main + 1 commander (basic logic)
-        main_target = 99
-        have_main = self.deck_counts['total']
-        valid = (have_main == main_target) and (self.deck_commander is not None)
-        col = "#5cb85c" if valid else "#d9534f"
-        self.summary_lbl.setText(
-            f"Lands:{self.deck_counts['lands']}  Creatures:{self.deck_counts['creatures']}  "
-            f"Other:{self.deck_counts['other']}  Total:{have_main}/99  "
-            f"{'OK' if valid else 'Incomplete'}"
-        )
-        self.summary_lbl.setStyleSheet(f"font:11px 'Consolas'; color:{col};")
-
-    def _is_basic_land(self, card):
-        # heuristic: type Land and name in standard basic set
-        return ('Land' in card.get('types', [])) and card['name'] in (
-            'Plains','Island','Swamp','Mountain','Forest','Wastes'
-        )
-
-    def _set_commander_from_selection(self):
-        sel = self.card_gallery.selectedItems()
-        if not sel:
-            return
-        card = sel[0].data(Qt.UserRole)
-        # must be legendary creature (simplified heuristic: contains "Legendary" + "Creature" in types line? types list from DB)
-        types = card.get('types', [])
-        # If DB lacks 'Legendary' separate type (common your DB might store supertypes elsewhere) fallback simple allow any Creature
-        if 'Creature' not in types:
-            return
-        self.deck_commander = card
-        # Remove from main if present
-        if card['name'] in self.deck_main:
-            del self.deck_main[card['name']]
-        self._recompute_deck_counts()
-        self._refresh_deck_builder_lists()
-        self._update_deck_summary()
-
-    def _clear_commander(self):
-        self.deck_commander = None
-        self._refresh_deck_builder_lists()
-        self._update_deck_summary()
-
-    # --- REPLACED: old _refresh_deck_tab (now builder uses _refresh_deck_builder_lists) ---
-    def _refresh_deck_tab(self):
-        if getattr(self, 'deck_builder_initialized', False):
-            self._refresh_deck_builder_lists()
-            self._update_deck_summary()
-    # --- ADDED: stacked play (lobby + board)
-    def _build_play_tab_stack(self):
-        self.play_stack = QStackedWidget()
-        self.lobby_widget = LobbyWidget(self)
-        self.play_stack.addWidget(self.lobby_widget)
-        wrap = QWidget()
-        v = QVBoxLayout(wrap); v.setContentsMargins(0,0,0,0); v.setSpacing(2)
-        top = QHBoxLayout()
-        self.btn_return_lobby = QPushButton("Return to Lobby")
-        self.btn_return_lobby.clicked.connect(lambda: self.play_stack.setCurrentIndex(0))
-        top.addWidget(self.btn_return_lobby); top.addStretch(1)
-        v.addLayout(top)
-        v.addWidget(self.play_area, 1)
-        self.play_stack.addWidget(wrap)
-        self.play_stack.setCurrentIndex(0)
-        return self.play_stack
-
-    # CHANGED: ensure play_stack exists before switching
+    # Adjusted existing internal calls to use wrapper name still (logic unchanged)
     def _enter_match_from_lobby(self, join_existing: bool):
         if getattr(self, 'pending_match_active', False):
-            # In queued flow we start via Start Game button only
             return
         self.controller.ensure_ai_opponent(new_game)
         if hasattr(self, 'play_stack'):
             self.play_stack.setCurrentIndex(1)
-        self.controller.enter_match()
+        # DEFER controller.enter_match() until after roll / starter decided
         if len(self.game.players) > 1:
-            # Prompt for first player roll
             QTimer.singleShot(50, self._prompt_first_player_roll)
         else:
-            # Single-player immediate start
-            self.controller.set_starter(0)
+            self._start_game_without_roll()   # ADDED single-player immediate path
         if self.controller.logging_enabled:
-            print(f"[LOBBY] {'Joined' if join_existing else 'Created'} local match. Starting game.")
+            print(f"[LOBBY] {'Joined' if join_existing else 'Created'} local match (awaiting start).")
         if hasattr(self, 'lobby_widget'):
             self.lobby_widget.refresh_deck()
+        self._update_phase_ui()
 
     # --- PENDING MATCH QUEUE LOGIC (NEW) ---
     def _create_pending_match(self):
@@ -922,53 +470,24 @@ class MainWindow(QMainWindow):
         if self.controller.logging_enabled:
             print("[QUEUE] Pending match created. Awaiting players (max 4).")
 
-    def _add_ai_player_pending(self):
-        if not getattr(self, 'pending_match_active', False):
-            return
-        if len(self.game.players) >= 4:
-            return
-        # Collect existing deck paths
-        used_paths = {getattr(p, 'source_path', None) for p in self.game.players}
-        decks_dir = os.path.join('data', 'decks')
-        deck_files = [os.path.join(decks_dir, f) for f in os.listdir(decks_dir)
-                      if f.lower().endswith('.txt')]
-        ai_path = None
-        for path in sorted(deck_files):
-            if path not in used_paths:
-                ai_path = path
-                break
-        if not ai_path:
-            ai_path = os.path.join(decks_dir, 'missing_ai_deck.txt')
-        # Build new specs: existing players (preserve AI flags) + new AI
-        specs = []
-        for p in self.game.players:
-            is_ai = p.player_id in self.controller.ai_controllers
-            specs.append((p.name, getattr(p, 'source_path', None), is_ai))
-        ai_name = f"AI{len(specs)}"
-        specs.append((ai_name, ai_path, True))
-        self._rebuild_game_with_specs(specs)
-        if hasattr(self, 'lobby_widget'):
-            self.lobby_widget.sync_pending_controls(True)
-        if self.controller.logging_enabled:
-            print(f"[QUEUE] Added AI player '{ai_name}' ({len(self.game.players)}/4).")
+    def _add_ai_player_pending(self):  # CHANGED body -> delegate
+        add_ai_player_pending(self)
 
     def _start_pending_match(self):
         if not getattr(self, 'pending_match_active', False):
             return
         self.pending_match_active = False
-        # Begin actual game
         self.play_stack.setCurrentIndex(1)
-        self.controller.enter_match()
+        # DEFER enter_match until after roll
         if len(self.game.players) > 1:
-            # Prompt for first player roll
             QTimer.singleShot(50, self._prompt_first_player_roll)
         else:
-            # Single-player immediate start
-            self.controller.set_starter(0)
+            self._start_game_without_roll()
         if self.controller.logging_enabled:
-            print(f"[QUEUE] Match started with {len(self.game.players)} player(s).")
+            print(f"[QUEUE] Match initialized (awaiting {'roll' if len(self.game.players)>1 else 'phase start'}).")
         if hasattr(self, 'lobby_widget'):
             self.lobby_widget.sync_pending_controls(False)
+        self._update_phase_ui()
 
     def _cancel_pending_match(self):
         if not getattr(self, 'pending_match_active', False):
@@ -996,6 +515,7 @@ class MainWindow(QMainWindow):
         # Refresh deck & pending list
         if hasattr(self, 'lobby_widget'):
             self.lobby_widget.refresh_deck()
+        self._update_phase_ui()     # ADDED
 
     # --- ADDED: debug window toggle (restores F9 functionality) ---
     def _toggle_debug_window(self):
@@ -1012,24 +532,35 @@ class MainWindow(QMainWindow):
             self._debug_win.show()
 
     def _maybe_ai_step(self):
+        # CHANGED: block ticking until first player decided
+        if not getattr(self.controller, 'first_player_decided', False):
+            return
+        if not self._match_started:
+            return  # ADDED: extra safety
         self.controller.tick(lambda: (
             hasattr(self.play_area, 'refresh_board') and self.play_area.refresh_board()
         ))
+        self._update_phase_ui()
 
     def _advance_phase(self):
+        # CHANGED: prevent manual phase advance prior to roll
+        if not getattr(self.controller, 'first_player_decided', False) or not self._match_started:
+            return
         self.controller.advance_phase()
+        self._update_phase_ui()
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
             self.close(); return
-        if not (self.controller.in_game and self.controller.first_player_decided):
-            return
-        if e.key() == Qt.Key_Space:
+        # CHANGED: ignore gameplay keys until after roll; allow logging toggle / debug access only after
+        if e.key() == Qt.Key_Space and (self.controller.in_game and self.controller.first_player_decided and self._match_started):
             if hasattr(self.game, 'stack') and self.game.stack.can_resolve():
                 self.game.stack.resolve_top(self.game)
             else:
                 self._advance_phase()
                 self.controller.log_phase()
+                self._update_phase_ui()
+            return
         elif e.key() == Qt.Key_L:
             self.set_logging_enabled(not self.controller.logging_enabled)
             print(f"[LOG] Phase logging {'enabled' if self.controller.logging_enabled else 'disabled'}")
@@ -1060,6 +591,26 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'lobby_widget'):
             self.lobby_widget.refresh_deck()
 
+    # ADDED helper: start full game after starter known (multi-player)
+    def _finalize_start_after_roll(self, starter_index: int):
+        if not self._match_started:
+            self.controller.enter_match()
+            self._match_started = True
+        self.controller.set_starter(starter_index)
+        self._handle_opening_hands_and_mulligans()
+        self.controller.log_phase()          # first phase log now
+        self._update_phase_ui()
+
+    # ADDED helper: single-player start (no roll)
+    def _start_game_without_roll(self):
+        if not self._match_started:
+            self.controller.enter_match()
+            self._match_started = True
+        self.controller.set_starter(0)
+        self._handle_opening_hands_and_mulligans()
+        self.controller.log_phase()
+        self._update_phase_ui()
+
     def _prompt_first_player_roll(self):
         if self.controller.first_player_decided or len(self.game.players) < 2:
             return
@@ -1079,7 +630,73 @@ class MainWindow(QMainWindow):
             pass_btn = choose.addButton("Pass", QMessageBox.DestructiveRole)
             choose.exec()
             starter = (winner + 1) % len(self.game.players) if choose.clickedButton() is pass_btn else winner
-            self.controller.set_starter(starter)
+            # MOVED: enter_match & phase log now handled in helper
+            self._finalize_start_after_roll(starter)
+        # ...existing code...
+
+    def _handle_opening_hands_and_mulligans(self):  # ADDED
+        """
+        Execute deferred opening draws and London mulligan.
+        Multiplayer ( >2 players ) uses free first mulligan (Commander rule 103.5c).
+        Only interactive for local player (player 0). Others auto-keep.
+        """
+        if self._opening_sequence_done:
+            return
+        if not getattr(self.game, '_opening_hands_deferred', False):
+            return
+        # Initial draw (7 each) if hands empty
+        for pl in self.game.players:
+            if not hasattr(pl, 'hand'):
+                pl.hand = []
+            if not pl.hand:
+                draw_n = 7
+                for _ in range(draw_n):
+                    if pl.library:
+                        pl.hand.append(pl.library.pop(0))
+            pl.mulligans_taken = 0
+        is_multiplayer = (len(self.game.players) > 2)
+        human = self.game.players[0] if self.game.players else None
+        if human:
+            while True:
+                hand_names = ", ".join(c.name for c in human.hand)
+                box = QMessageBox(self)
+                box.setWindowTitle("Opening Hand")
+                box.setText(
+                    f"Opening Hand ({len(human.hand)} cards):\n{hand_names or '(empty)'}\n\n"
+                    "Mulligan? (London mulligan: always draw 7 then put cards on bottom equal to mulligans taken"
+                    f"{' (first one free in multiplayer)' if is_multiplayer else ''})."
+                )
+                mull_btn = box.addButton("Mulligan", QMessageBox.DestructiveRole)
+                keep_btn = box.addButton("Keep", QMessageBox.AcceptRole)
+                box.exec()
+                if box.clickedButton() is keep_btn:
+                    break
+                # Perform mulligan
+                human.mulligans_taken += 1
+                # Return current hand to library, shuffle
+                returned = human.hand[:]
+                human.hand.clear()
+                human.library = returned + human.library
+                random.shuffle(human.library)
+                # Draw 7
+                for _ in range(7):
+                    if human.library:
+                        human.hand.append(human.library.pop(0))
+                # London bottom step: put N cards = mulligans_taken minus free one (if multiplayer)
+                effective = human.mulligans_taken - (1 if is_multiplayer and human.mulligans_taken == 1 else 0)
+                if effective > 0 and len(human.hand) > effective:
+                    # Simple heuristic: bottom random 'effective' cards (UI selection omitted for brevity)
+                    to_bottom_idx = random.sample(range(len(human.hand)), effective)
+                    to_bottom_idx.sort(reverse=True)
+                    moving = []
+                    for idx in to_bottom_idx:
+                        moving.append(human.hand.pop(idx))
+                    # Chosen order: put in chosen sequence (could allow re-order UI)
+                    human.library.extend(moving)
+        # Mark done
+        self._opening_sequence_done = True
+        # Clear deferred flag
+        setattr(self.game, '_opening_hands_deferred', False)
 
 def parse_deck_txt_file(path: str):
     """
