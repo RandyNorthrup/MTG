@@ -6,25 +6,25 @@ import shutil
 import urllib.request
 from typing import Dict, Tuple, Optional
 
-# -------- Tunables (env overridable) --------
+# ---- Tunables ----
 MAX_CACHE_IMAGES = int(os.environ.get("MTG_IMG_CACHE_MAX", "400"))
 CACHE_TTL_SEC    = int(os.environ.get("MTG_IMG_CACHE_TTL", "14400"))   # 4h metadata retention
 EVICT_BATCH      = int(os.environ.get("MTG_IMG_CACHE_BATCH", "30"))
 CLEAN_INTERVAL   = int(os.environ.get("MTG_IMG_CLEAN_INTERVAL", "600"))
 REQ_TIMEOUT      = int(os.environ.get("MTG_IMG_HTTP_TIMEOUT", "12"))
 
-# -------- Directories --------
+# ---- Directories ----
 LEGACY_DIR  = os.path.join("data", "img_cache")             # persistent store
-SESSION_DIR = os.path.join(tempfile.gettempdir(), "mtg_img_session")
+SESSION_DIR = os.path.join(tempfile.gettempdir(), "mtg_img_session")  # ephemeral (only cleared on exit)
 os.makedirs(LEGACY_DIR, exist_ok=True)
 os.makedirs(SESSION_DIR, exist_ok=True)
 
-# -------- Internal state --------
+# ---- Internal state ----
 _lock = threading.RLock()
 _meta: Dict[str, Tuple[str, float]] = {}   # card_id -> (path, last_access_epoch)
 _qt_timer = None
 
-# -------- Helpers --------
+# ---- Helper utilities ----
 def _now() -> float:
     return time.time()
 
@@ -36,13 +36,11 @@ def _safe_remove(path: str):
         pass
 
 def _is_valid_image(path: str) -> bool:
-    """
-    Basic sanity: exists, minimum size, optional QPixmap load.
-    """
+    """Basic sanity: exists, minimal size, optional QPixmap load."""
     try:
         if not os.path.isfile(path):
             return False
-        if os.path.getsize(path) < 512:  # reject tiny / truncated
+        if os.path.getsize(path) < 512:     # reject tiny / corrupt
             return False
         try:
             from PySide6.QtGui import QPixmap  # type: ignore
@@ -92,17 +90,18 @@ def _download_scryfall(card_id: str, dest: str) -> bool:
     _safe_remove(tmp)
     return False
 
-# -------- Public API --------
+# ---- Public API ----
 def ensure_card_image(card_id: str) -> Optional[str]:
     """
-    Return path to a valid image (downloaded once). None if unavailable.
-    Order:
+    Return path to a valid image (downloads once). None if unavailable.
+    Lookup order:
       1. Persistent legacy cache
       2. Download -> legacy
     """
     if not card_id:
         return None
 
+    # Legacy
     legacy = _legacy_candidate(card_id)
     if legacy:
         if _is_valid_image(legacy):
@@ -112,17 +111,19 @@ def ensure_card_image(card_id: str) -> Optional[str]:
             return legacy
         _safe_remove(legacy)
 
+    # Download
     target = os.path.join(LEGACY_DIR, f"{card_id}.jpg")
     if _download_scryfall(card_id, target):
         with _lock:
             _meta[card_id] = (target, _now())
             _evict()
         return target
+
     return None
 
 def cleanup_cache(force: bool = False):
     """
-    Evict stale metadata. force=True also purges session dir (not used for storage now).
+    Metadata eviction only. force=True also purges SESSION_DIR files.
     """
     with _lock:
         if force:
@@ -134,7 +135,7 @@ def cleanup_cache(force: bool = False):
 
 def repair_cache():
     """
-    Remove corrupt / undersized images. No fabrication.
+    Remove corrupt / undersized images; no fabrication.
     """
     removed = 0
     for root in (LEGACY_DIR, SESSION_DIR):
@@ -169,7 +170,7 @@ def init_image_cache(qt_parent=None, interval_sec: int = CLEAN_INTERVAL):
 
 def teardown_cache():
     """
-    Clear ephemeral metadata + session folder (leave persistent images).
+    Clear session (ephemeral) metadata + files; keep legacy images.
     """
     try:
         cleanup_cache(force=True)

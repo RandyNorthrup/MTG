@@ -4,7 +4,12 @@ from config import STARTING_LIFE
 from engine.game_state import GameState, PlayerState
 from engine.rules_engine import init_rules
 from engine.card_db import load_card_db, maybe_bootstrap_sql  # ADDED
-from engine.card_fetch import load_deck, prewarm_card_images, set_sdk_online
+try:
+    from engine.card_fetch import set_sdk_online          # CHANGED: safe optional import
+except Exception:
+    def set_sdk_online(_flag: bool):  # fallback no-op
+        return
+
 from engine.deck_specs import build_default_deck_specs, collect_ai_player_ids
 
 
@@ -52,6 +57,92 @@ def _auto_decks(decks_dir: str):
     return player, ai
 
 
+# NEW: unified deck loader (with fallback if card_fetch.load_deck missing)
+try:
+    from engine.card_fetch import load_deck as _load_deck  # primary path
+except Exception:
+    def _load_deck(path: str, owner_id: int):
+        # Fallback lightweight loader (no SDK enrich)
+        by_id, by_name_lower, by_norm, db_path = load_card_db()
+        entries, commander_name = _parse_deck_file(path)
+        cards, commander = _build_cards_fallback(entries, commander_name, by_id, by_name_lower, by_norm, path, owner_id)
+        return cards, commander
+
+    import re
+
+    def _parse_deck_file(path: str):
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        entries = []
+        commander = None
+        last = None
+        with open(path, 'r', encoding='utf-8-sig') as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#'):
+                    continue
+                low = line.lower()
+                if low.startswith('commander:'):
+                    cand = line.split(':', 1)[1].strip()
+                    if cand: commander = cand
+                    continue
+                m = re.match(r'^(\d+)\s+(.+)$', line)
+                if m:
+                    ct = int(m.group(1)); name = m.group(2).strip()
+                    if ct > 0 and name:
+                        entries.extend([name]*ct); last = name
+                else:
+                    entries.append(line); last = line
+        if commander is None:
+            commander = last
+        return entries, commander
+
+    def _build_cards_fallback(entries, commander_name, by_id, by_name_lower, by_norm, deck_path, owner_id):
+        from engine.card_engine import Card
+        from engine.rules_engine import parse_and_attach
+        import random
+        def _norm(s): return re.sub(r'[^a-z0-9]+', ' ', s.lower()).strip()
+        def _resolve(name):
+            if name in by_id: return by_id[name]
+            low = name.lower()
+            c = by_name_lower.get(low)
+            if c: return c
+            c = by_norm.get(_norm(name))
+            if c: return c
+            cand = [v for k,v in by_name_lower.items() if k.startswith(low)]
+            if len(cand) == 1: return cand[0]
+            raise KeyError(f"Card '{name}' not found (deck={deck_path})")
+        commander_src = _resolve(commander_name) if commander_name else None
+        lib = []
+        for n in entries:
+            src = _resolve(n)
+            if commander_src and src['id'] == commander_src['id']:
+                continue
+            card = Card(
+                id=src['id'], name=src['name'], types=src['types'],
+                mana_cost=src['mana_cost'], power=src.get('power'),
+                toughness=src.get('toughness'), text=src.get('text',''),
+                is_commander=False, color_identity=src.get('color_identity',[]),
+                owner_id=owner_id, controller_id=owner_id
+            )
+            if 'mana_cost_str' in src:
+                setattr(card, 'mana_cost_str', src['mana_cost_str'])
+            parse_and_attach(card)
+            lib.append(card)
+        commander_obj = None
+        if commander_src:
+            commander_obj = Card(
+                id=commander_src['id'], name=commander_src['name'], types=commander_src['types'],
+                mana_cost=commander_src['mana_cost'], power=commander_src.get('power'),
+                toughness=commander_src.get('toughness'), text=commander_src.get('text',''),
+                is_commander=True, color_identity=commander_src.get('color_identity',[]),
+                owner_id=owner_id, controller_id=owner_id
+            )
+            if 'mana_cost_str' in commander_src:
+                setattr(commander_obj, 'mana_cost_str', commander_src['mana_cost_str'])
+            parse_and_attach(commander_obj)
+        return lib, commander_obj
+
 def new_game(deck_specs=None, ai_enabled=True):
     """
     Construct a fresh GameState and return (game, ai_player_ids).
@@ -62,11 +153,10 @@ def new_game(deck_specs=None, ai_enabled=True):
     player_deck, ai_deck = _auto_decks(decks_dir)
     if not deck_specs:
         deck_specs = build_default_deck_specs(player_deck, ai_deck, ai_enabled)
-
     players = []
     for pid, (name, path, is_ai) in enumerate(deck_specs):
         try:
-            cards, commander = load_deck(path, pid)
+            cards, commander = _load_deck(path, pid)   # CHANGED
         except Exception as e:
             print(f"[DECK][{name}] Load error: {e}")
             cards, commander = [], None
@@ -74,7 +164,6 @@ def new_game(deck_specs=None, ai_enabled=True):
                          life=STARTING_LIFE, library=cards, commander=commander)
         ps.source_path = path
         players.append(ps)
-
     game = GameState(players=players)
     game.setup()
     init_rules(game)
@@ -85,8 +174,6 @@ def new_game(deck_specs=None, ai_enabled=True):
             pl.library = list(pl.hand) + pl.library
             pl.hand.clear()
     setattr(game, '_opening_hands_deferred', True)
-
-    prewarm_card_images(game.players)
     ai_ids = collect_ai_player_ids(deck_specs, ai_enabled)
     return game, ai_ids
 
@@ -99,3 +186,5 @@ def create_initial_game(args):
     set_sdk_online(bool(getattr(args, 'sdk_online', False)))
     specs = _deck_specs_from_args(getattr(args, 'deck', None))
     return new_game(specs if specs else None, ai_enabled=not args.no_ai)
+
+# (No logic change – image cache initializes lazily in main window via init_image_cache)

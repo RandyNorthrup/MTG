@@ -1,5 +1,6 @@
 ﻿import sys
-import os  # ADDED
+import os
+import tempfile
 from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout
 from PySide6.QtCore import QTimer, Qt
 from config import *
@@ -10,6 +11,7 @@ from ui.play_tab import build_play_stack
 from ui.phase_ui import update_phase_ui as _phase_update
 from ui.game_app_api import GameAppAPI
 from engine.game_init import parse_args, create_initial_game, new_game  # ADDED (moved logic)
+from image_cache import init_image_cache, teardown_cache, repair_cache  # CHANGED
 
 # --- Main Window Shell (logic delegated to GameAppAPI) ----------------------
 class MainWindow(QMainWindow):
@@ -33,6 +35,7 @@ class MainWindow(QMainWindow):
         self._debug_win = None
         self.settings_manager = None
         self._update_phase_ui()
+        init_image_cache(self, interval_sec=300)  # ADDED: periodic image cache maintenance
 
     def set_logging_enabled(self, value: bool):
         self.controller.logging_enabled = bool(value)
@@ -65,6 +68,10 @@ class MainWindow(QMainWindow):
             return
         self.api.handle_key(e.key())
 
+    def closeEvent(self, ev):  # ADDED graceful cache teardown
+        teardown_cache()
+        super().closeEvent(ev)
+
     # Legacy stubs
     def _reload_player0(self): self.api.reload_player0(getattr(self, 'current_deck_path', None))
     def _toggle_debug_window(self): self.api.toggle_debug_window()
@@ -76,6 +83,7 @@ def main():
         os.environ['MTG_SQL'] = '1'
     args = parse_args()                      # moved out
     game, ai_ids = create_initial_game(args) # moved out
+    repair_cache()  # CHANGED: single centralized repair
     app = QApplication(sys.argv)
     w = MainWindow(game=game, ai_ids=ai_ids, args=args)
     w.resize(SCREEN_W, SCREEN_H)

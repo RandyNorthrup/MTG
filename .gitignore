@@ -25,6 +25,8 @@ data/cards/*.zip
 
 # Cache (runtime)
 cache/
+# Card image cache (runtime downloads)
+data/img_cache/
 
 # Type / test cache
 .pytest_cache/

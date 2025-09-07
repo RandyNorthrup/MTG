@@ -2,7 +2,7 @@ import os
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QSplitter, QVBoxLayout, QLineEdit,
     QHBoxLayout as HBox, QGridLayout, QPushButton, QCheckBox, QListWidget, QListView,
     QSpinBox, QLabel, QGroupBox, QListWidgetItem)
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QEvent, QTimer, QObject   # CHANGED add QObject
 from PySide6.QtGui import QPixmap
 from image_cache import ensure_card_image
 
@@ -13,8 +13,10 @@ def _load_card_db():
     from engine.card_db import load_card_db as _lcd
     return _lcd()
 
-class DecksTabManager:
+class DecksTabManager(QObject):   # CHANGED (inherit QObject for eventFilter)
     def __init__(self, main_win):
+        # FIX: GameAppAPI isn't a QObject; avoid passing as parent
+        super().__init__()   # CHANGED
         self.mw = main_win
         self.deck_builder_initialized = False
         # state copied from original
@@ -89,6 +91,11 @@ class DecksTabManager:
         self.card_gallery.setIconSize(QSize(144,200))
         self.card_gallery.setSpacing(8)
         self.card_gallery.itemDoubleClicked.connect(lambda _: self._add_selected_card())
+        # Lazy load hooks
+        self.card_gallery.installEventFilter(self)
+        self.card_gallery.verticalScrollBar().valueChanged.connect(self._lazy_load_visible_images)
+        if self.card_gallery.horizontalScrollBar():
+            self.card_gallery.horizontalScrollBar().valueChanged.connect(self._lazy_load_visible_images)
         rv.addWidget(self.card_gallery, 3)
 
         lower_split = QSplitter(); lower_split.setOrientation(Qt.Horizontal)
@@ -127,7 +134,13 @@ class DecksTabManager:
         self._populate_gallery()
         self._refresh_lists()
         self._update_summary()
+        QTimer.singleShot(0, self._lazy_load_visible_images)  # initial lazy load after layout
         return root
+
+    def eventFilter(self, obj, ev):
+        if obj is self.card_gallery and ev.type() in (QEvent.Resize, QEvent.Show):
+            QTimer.singleShot(0, self._lazy_load_visible_images)
+        return super().eventFilter(obj, ev)
 
     def refresh(self):
         self._refresh_lists()
@@ -162,13 +175,33 @@ class DecksTabManager:
             if len(items) >= 400: break
         self.card_gallery.clear()
         for c in items:
-            ensure_card_image(c['id'])
             li = QListWidgetItem(c['name'])
             li.setData(Qt.UserRole, c)
-            img_path = os.path.join('data','img_cache', f"{c['id']}.jpg")
-            if os.path.exists(img_path):
-                li.setIcon(QPixmap(img_path).scaled(144,200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            li.setData(Qt.UserRole+1, False)  # mark image not loaded
+            # no image fetch here (lazy)
             self.card_gallery.addItem(li)
+
+    def _lazy_load_visible_images(self):
+        """
+        Fetch images only for items whose visual rect intersects the viewport.
+        """
+        if not self.card_gallery.count():
+            return
+        viewport = self.card_gallery.viewport().rect()
+        for i in range(self.card_gallery.count()):
+            item = self.card_gallery.item(i)
+            if item.data(Qt.UserRole+1):
+                continue
+            rect = self.card_gallery.visualItemRect(item)
+            if not rect.isValid() or not rect.intersects(viewport):
+                continue
+            card = item.data(Qt.UserRole)
+            path = ensure_card_image(card['id'])
+            if path and os.path.exists(path):
+                pm = QPixmap(path)
+                if not pm.isNull():
+                    item.setIcon(pm.scaled(144,200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            item.setData(Qt.UserRole+1, True)
 
     def _add_selected_card(self):
         sel = self.card_gallery.selectedItems()
@@ -208,10 +241,12 @@ class DecksTabManager:
             li.setData(Qt.UserRole, name)
             self.deck_list_widget.addItem(li)
         if self.deck_commander:
-            ensure_card_image(self.deck_commander['id'])
-            path = os.path.join('data','img_cache', f"{self.deck_commander['id']}.jpg")
-            if os.path.exists(path):
-                self.cmd_img.setPixmap(QPixmap(path).scaled(180,250, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            path = ensure_card_image(self.deck_commander['id'])
+            # removed any .jpg assumptions
+            if path and os.path.exists(path):
+                pm = QPixmap(path)
+                if not pm.isNull():
+                    self.cmd_img.setPixmap(pm.scaled(180,250, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             self.cmd_name_lbl.setText(self.deck_commander['name'])
         else:
             self.cmd_img.clear()
@@ -252,5 +287,5 @@ class DecksTabManager:
 
     def _clear_commander(self):
         self.deck_commander = None
-        self._refresh_lists(); self._update_summary()
-        self._refresh_lists(); self._update_summary()
+        self._refresh_lists()
+        self._update_summary()
