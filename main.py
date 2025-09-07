@@ -1,8 +1,11 @@
 ﻿import sys, os, json, re, argparse
+import random
 from PySide6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
                                QVBoxLayout, QLabel, QPushButton, QMessageBox,
-                               QListWidget, QListWidgetItem, QHBoxLayout, QLineEdit)
-from PySide6.QtCore import QTimer, Qt
+                               QListWidget, QListWidgetItem, QHBoxLayout, QLineEdit,
+                               QComboBox, QTextEdit, QCheckBox, QStackedWidget)  # NEW UI widgets
+from PySide6.QtCore import QTimer, Qt, QSize  # modified (added QSize)
+from PySide6.QtGui import QPixmap, QPainter  # NEW
 # ...existing game/engine imports untouched...
 from config import *
 from engine.game_state import GameState, PlayerState
@@ -12,6 +15,8 @@ from image_cache import ensure_card_image  # added
 from engine.rules_engine import parse_and_attach, init_rules  # NEW
 from engine.combat import attach_combat  # NEW
 from engine.continuous import attach_continuous  # NEW
+from engine.mana import parse_mana_cost, GENERIC_KEY  # NEW for AI cost eval
+from engine.lobby import LobbyServer  # NEW
 
 _NORMALIZE_RE = re.compile(r'[^a-z0-9]+')
 def _normalize_name(s: str) -> str:
@@ -31,29 +36,21 @@ def load_card_db(force: bool = False):
         raw = json.load(f)
     raw_cards = list(raw.values()) if isinstance(raw, dict) else list(raw)
     cards = []
-    skipped = 0
     for c in raw_cards:
-        if not isinstance(c, dict):
-            skipped += 1; continue
-        if 'id' not in c or 'name' not in c:
-            skipped += 1; continue
-        cards.append(c)
+        if isinstance(c, dict) and 'id' in c and 'name' in c:
+            cards.append(c)
     by_id = {c['id']:c for c in cards}
     by_name_lower = {c['name'].lower(): c for c in cards}
     by_norm = {_normalize_name(c['name']): c for c in cards}
     _CARD_DB_CACHE = (by_id, by_name_lower, by_norm, path)
     _CARD_NAME_LIST = sorted(by_name_lower.keys())
-    if skipped:
-        print(f"[CARD_DB] Loaded {len(cards)} cards; skipped {skipped} invalid entries")
-    else:
-        print(f"[CARD_DB] Loaded {len(cards)} cards")
     return _CARD_DB_CACHE
 
 def get_card_name_list():
     if _CARD_NAME_LIST is None:
         load_card_db()
     # Return human-readable (capitalized) names from by_id to preserve original case
-    by_id, by_name_lower, *_ = load_card_db()
+    by_id, *_ = load_card_db()
     return sorted({c['name'] for c in by_id.values()})
 
 def _resolve_entry(entry: str, by_id, by_name_lower, by_norm, deck_path, db_path):
@@ -75,6 +72,7 @@ def _resolve_entry(entry: str, by_id, by_name_lower, by_norm, deck_path, db_path
 
 def _build_cards(entries, commander_name, *, by_id, by_name_lower, by_norm, db_path_used, deck_path, owner_id):
     from engine.card_engine import Card
+    from engine.rules_engine import parse_and_attach
     cards = []
     commander_card = _resolve_entry(commander_name, by_id, by_name_lower, by_norm, deck_path, db_path_used) if commander_name else None
     for e in entries:
@@ -83,32 +81,30 @@ def _build_cards(entries, commander_name, *, by_id, by_name_lower, by_norm, db_p
             continue
         card_obj = Card(
             id=c['id'], name=c['name'], types=c['types'], mana_cost=c['mana_cost'],
-            power=c.get('power'), toughness=c.get('toughness'), text=c.get('text',''),
-            is_commander=False, color_identity=c.get('color_identity',[]),
+            power=c.get('power'), toughness=c.get('toughness'), text=c.get('text', ''),
+            is_commander=False, color_identity=c.get('color_identity', []),
             owner_id=owner_id, controller_id=owner_id
         )
-        # NEW: store original cost string if available
         if 'mana_cost_str' in c:
             setattr(card_obj, 'mana_cost_str', c['mana_cost_str'])
-        # NEW: attach parsed abilities
         parse_and_attach(card_obj)
         cards.append(card_obj)
     commander_obj = None
     if commander_card:
+        from engine.card_engine import Card
         commander_obj = Card(
             id=commander_card['id'], name=commander_card['name'], types=commander_card['types'],
             mana_cost=commander_card['mana_cost'], power=commander_card.get('power'),
-            toughness=commander_card.get('toughness'), text=commander_card.get('text',''),
-            is_commander=False, color_identity=commander_card.get('color_identity',[]),
+            toughness=commander_card.get('toughness'), text=commander_card.get('text', ''),
+            is_commander=False, color_identity=commander_card.get('color_identity', []),
             owner_id=owner_id, controller_id=owner_id
         )
         if 'mana_cost_str' in commander_card:
             setattr(commander_obj, 'mana_cost_str', commander_card['mana_cost_str'])
-        parse_and_attach(commander_obj)  # NEW
+        parse_and_attach(commander_obj)
     return cards, commander_obj
 
 def load_deck(path, by_id, by_name_lower, by_norm, db_path_used, owner_id):
-    # Native .txt only
     entries, commander_name = parse_deck_txt_file(path)
     return _build_cards(entries, commander_name,
                         by_id=by_id, by_name_lower=by_name_lower, by_norm=by_norm,
@@ -117,9 +113,9 @@ def load_deck(path, by_id, by_name_lower, by_norm, db_path_used, owner_id):
 def load_banlist(path):
     banned = set()
     if os.path.exists(path):
-        with open(path,'r',encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             for line in f:
-                line=line.strip()
+                line = line.strip()
                 if line and not line.startswith('#'):
                     banned.add(line)
     return banned
@@ -153,7 +149,7 @@ def _deck_specs_from_args(arg_list):
 
 def new_game(deck_specs=None, ai_enabled=True):
     by_id, by_name_lower, by_norm, db_path_used = load_card_db()
-    decks_dir = os.path.join('data','decks')
+    decks_dir = os.path.join('data', 'decks')
     os.makedirs(decks_dir, exist_ok=True)
     deck_files = sorted([os.path.join(decks_dir, f) for f in os.listdir(decks_dir) if f.lower().endswith('.txt')])
     # Auto-pick opponent (AI) deck = first deck file
@@ -195,8 +191,202 @@ def new_game(deck_specs=None, ai_enabled=True):
     return game, ai_players
 
 def build_ai_controllers(ai_ids):
-    return {pid: BasicAI(pid=pid) for pid in ai_ids}
-# --- end added helpers ---
+    ctrls = {pid: BasicAI(pid=pid) for pid in ai_ids}
+    return ctrls
+
+def enhance_ai_controllers(game, ai_controllers):
+    """
+    Patch BasicAI instances with minimal logic to:
+      - MAIN1: play 1 land, cast cheapest spells (creature/enchantment/artifact)
+      - COMBAT_DECLARE: declare all untapped creatures as attackers
+      - COMBAT_BLOCK: block attackers with all untapped creatures (1:1 first)
+    """
+    def card_total_cost(card):
+        cost_dict = parse_mana_cost(getattr(card, 'mana_cost_str', ''))
+        if not cost_dict:
+            # fallback numeric generic
+            if isinstance(card.mana_cost, int):
+                return card.mana_cost
+            try:
+                return int(card.mana_cost)
+            except Exception:
+                return 0
+        return sum(cost_dict.values())
+
+    def play_land_if_possible(ctrl, player):
+        if getattr(ctrl, '_land_played_this_turn', False):
+            return
+        for card in list(player.hand):
+            if 'Land' in card.types:
+                # Try engine method first
+                if hasattr(game, 'play_land'):
+                    try:
+                        game.play_land(player.player_id, card)
+                        ctrl._land_played_this_turn = True
+                        return
+                    except Exception:
+                        pass
+                # Fallback manual move
+                try:
+                    player.hand.remove(card)
+                    # wrap into permanent if engine expects different object
+                    if hasattr(game, 'enter_battlefield'):
+                        game.enter_battlefield(player.player_id, card)
+                    else:
+                        player.battlefield.append(type("Perm", (), {"card": card, "tapped": False})())
+                    ctrl._land_played_this_turn = True
+                    return
+                except Exception:
+                    continue
+
+    def available_untapped_lands(player):
+        lands = []
+        for perm in getattr(player, 'battlefield', []):
+            c = getattr(perm, 'card', perm)
+            if 'Land' in c.types and not getattr(perm, 'tapped', False):
+                lands.append(perm)
+        return lands
+
+    def tap_for_generic(pid, needed):
+        # naive: treat each land as 1 generic
+        tapped = 0
+        for perm in list(available_untapped_lands(game.players[pid])):
+            if tapped >= needed:
+                break
+            try:
+                # game.tap_for_mana may add mana; if produce_mana flag exists we let default
+                if hasattr(game, 'tap_for_mana'):
+                    game.tap_for_mana(pid, perm)
+                else:
+                    perm.tapped = True
+                tapped += 1
+            except Exception:
+                perm.tapped = True
+                tapped += 1
+        return tapped >= needed
+
+    def cast_spells(ctrl, player):
+        made_progress = True
+        safety = 0
+        while made_progress and safety < 20:
+            safety += 1
+            made_progress = False
+            # simple sort by total cost ascending
+            castables = [c for c in list(player.hand)
+                         if 'Land' not in c.types and any(t in c.types for t in ('Creature', 'Enchantment', 'Artifact'))]
+            if not castables:
+                break
+            castables.sort(key=card_total_cost)
+            for card in castables:
+                cost = card_total_cost(card)
+                if cost == 0:
+                    try:
+                        game.cast_spell(player.player_id, card)
+                        made_progress = True
+                        break
+                    except Exception:
+                        continue
+                # ensure enough untapped lands
+                if len(available_untapped_lands(player)) >= cost:
+                    if tap_for_generic(player.player_id, cost):
+                        try:
+                            game.cast_spell(player.player_id, card)
+                            made_progress = True
+                            break
+                        except Exception:
+                            # ignore failure (maybe needs target) continue loop
+                            pass
+
+    def declare_attackers(ctrl, player):
+        if not hasattr(game, 'combat'):
+            return
+        # toggle all untapped creature permanents
+        for perm in list(player.battlefield):
+            card = getattr(perm, 'card', perm)
+            if 'Creature' in card.types and not getattr(perm, 'tapped', False):
+                try:
+                    game.combat.toggle_attacker(player.player_id, perm)
+                except Exception:
+                    pass
+        game.combat.attackers_committed()
+        # advance phase if engine doesn't auto-progress
+        if getattr(game, 'phase', '').upper() == 'COMBAT_DECLARE':
+            game.phase = 'COMBAT_BLOCK'
+
+    def assign_blockers(ctrl, player):
+        if not hasattr(game, 'combat'):
+            return
+        atk_map = game.combat.state.attackers
+        if not atk_map:
+            return
+        # assign each untapped creature to first attacker (one blocker each attacker)
+        blockers_used = set()
+        for perm in list(player.battlefield):
+            if len(blockers_used) >= len(atk_map):
+                break
+            card = getattr(perm, 'card', perm)
+            if 'Creature' in card.types and not getattr(perm, 'tapped', False):
+                attacker = atk_map[len(blockers_used)]
+                try:
+                    game.combat.toggle_blocker(player.player_id, perm, attacker)
+                    blockers_used.add(perm)
+                except Exception:
+                    continue
+        # commit -> damage
+        if getattr(game, 'phase', '').upper() == 'COMBAT_BLOCK':
+            game.phase = 'COMBAT_DAMAGE'
+            try:
+                game.combat.assign_and_deal_damage()
+            except Exception:
+                pass
+            game.phase = 'MAIN2'
+
+    def end_main_if_nothing(ctrl, player):
+        # attempt to move to next phase if no stack & nothing else to do
+        if getattr(game.stack, 'can_resolve', lambda: False)():
+            return
+        if hasattr(game, 'next_phase'):
+            game.next_phase()
+
+    for pid, ctrl in ai_controllers.items():
+        # attach dynamic method
+        def take_turn_bound(game_ref=game, controller=ctrl, pid=pid):
+            phase = game_ref.phase.upper()
+            player = game_ref.players[pid]
+            # reset per-turn flags at start
+            if phase == 'UNTAP':
+                controller._land_played_this_turn = False
+                controller._phase_done = set()
+            done = getattr(controller, '_phase_done', set())
+            if phase == 'MAIN1' and phase not in done:
+                play_land_if_possible(controller, player)
+                cast_spells(controller, player)
+                done.add(phase)
+                end_main_if_nothing(controller, player)
+            elif phase == 'COMBAT_DECLARE' and game_ref.active_player == pid and phase not in done:
+                declare_attackers(controller, player)
+                done.add(phase)
+            elif phase == 'COMBAT_BLOCK' and game_ref.active_player != pid and phase not in done:
+                assign_blockers(controller, player)
+                done.add(phase)
+            elif phase == 'MAIN2' and phase not in done:
+                cast_spells(controller, player)
+                done.add(phase)
+                end_main_if_nothing(controller, player)
+            controller._phase_done = done
+        ctrl.take_turn = take_turn_bound
+
+class ScaledBackground(QWidget):  # NEW
+    def __init__(self, img_path):
+        super().__init__()
+        self._pix = QPixmap(img_path)
+
+    def paintEvent(self, ev):
+        if self._pix.isNull():
+            return
+        p = QPainter(self)
+        # Stretch to exact widget size (no aspect ratio preservation per prior request)
+        p.drawPixmap(self.rect(), self._pix)
 
 class MainWindow(QMainWindow):
     def __init__(self, game, ai_ids, args):
@@ -205,76 +395,623 @@ class MainWindow(QMainWindow):
         self.game = game
         self.args = args
         self.ai_controllers = build_ai_controllers(ai_ids)
+        enhance_ai_controllers(game, self.ai_controllers)
         self.logging_enabled = not (args and args.no_log)
         self.play_area = PlayArea(game)
+        # --- NEW lobby state attrs (must exist before building lobby UI) ---
+        self._active_lobby_id = None
+        self._in_game = True              # starts with provided game; lobby builder will flip to False
+        self._local_player_name = (self.game.players[0].name if self.game.players else "You")
+        # ---------------------------------------------------------------
         self.tabs = QTabWidget()
         self._init_tabs()
-        # Ensure deck editor state initialized after tabs are created
         self._deck_editor_state_init()
         self.setCentralWidget(self.tabs)
         self._phase_timer = QTimer(self)
         self._phase_timer.timeout.connect(self._maybe_ai_step)
         self._phase_timer.start(400)
         self._log_phase()
-        self._ai_disabled_after_game = False  # new guard
+        self._ai_disabled_after_game = False
+        # Only run pre-game setup if we are actually in a game view now
+        if self._in_game and len(self.game.players) > 1:
+            QTimer.singleShot(50, self._initial_pregame_setup)
 
+        # NEW: human turn helpers
+        self._human_land_played_this_turn = False  # NEW
+
+    # --- pre-game setup (first player + mulligans) ---
+    def _initial_pregame_setup(self):
+        # Guard if we are currently in lobby (no active game yet) or solo placeholder
+        if not getattr(self, '_in_game', False) or len(self.game.players) < 2:
+            return
+        self._randomize_starting_player()
+        self._run_mulligans()
+        self._log_phase()
+
+    def _randomize_starting_player(self):
+        # Choose starting player randomly (single winner)
+        old = self.game.active_player
+        self.game.active_player = random.randint(0, len(self.game.players)-1)
+        if self.logging_enabled:
+            print(f"[START] Random first player: {self.game.players[self.game.active_player].name} (was {self.game.players[old].name})")
+        QMessageBox.information(self, "First Player",
+                                f"{self.game.players[self.game.active_player].name} will take the first turn.")
+
+    def _run_mulligans(self):
+        """
+        Simplified London mulligan for player 0 (human).
+        AI keeps first hand.
+        - Human may mulligan repeatedly while hand size > 0.
+        - After choosing keep: bottom (random) N cards where N = mulligans taken.
+        """
+        pl = self.game.players[0]
+        if not hasattr(pl, 'hand'):
+            return
+        mulligans = 0
+        while True:
+            hand_sz = len(pl.hand)
+            if hand_sz == 0:
+                break
+            resp = QMessageBox.question(self, "Mulligan",
+                                        f"Hand size {hand_sz}. Take a mulligan? (You have taken {mulligans})",
+                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if resp == QMessageBox.No:
+                break
+            mulligans += 1
+            # Put hand back, shuffle, draw 7
+            pl.library.extend(pl.hand)
+            pl.hand.clear()
+            random.shuffle(pl.library)
+            draw_n = min(7, len(pl.library))
+            for _ in range(draw_n):
+                if pl.library:
+                    pl.hand.append(pl.library.pop(0))
+            if draw_n == 0:
+                break
+        if mulligans > 0 and len(pl.hand) > mulligans:
+            # Bottom N random (simulate choosing)
+            to_bottom = random.sample(pl.hand, mulligans)
+            for c in to_bottom:
+                pl.hand.remove(c)
+                pl.library.append(c)  # append = bottom
+        if mulligans and self.logging_enabled:
+            print(f"[MULLIGAN] Player {pl.name} final hand={len(pl.hand)} after {mulligans} mulligan(s)")
+
+    # --- LOBBY UI BUILD (NEW) ---
+    def _build_play_tab_stack(self):
+        # Wrapper stack: index 0 = Lobby, index 1 = Game
+        self.play_stack = QStackedWidget()
+        # Lobby panel
+        from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
+        lob_w = QWidget()
+        v = QVBoxLayout(lob_w)
+        v.addWidget(QLabel("Lobby - Host or Join"))
+        # Deck select
+        self.lobby_deck_combo = QComboBox()
+        self._refresh_lobby_deck_list()
+        v.addWidget(self.lobby_deck_combo)
+        # Buttons
+        btn_row = QHBoxLayout()
+        self.btn_host = QPushButton("Host Game")
+        self.btn_join_refresh = QPushButton("Refresh Lobbies")
+        self.btn_ready = QPushButton("Ready")
+        self.btn_start = QPushButton("Start (Host)")
+        self.btn_ready.setEnabled(False)
+        self.btn_start.setEnabled(False)
+        for b in (self.btn_host, self.btn_join_refresh, self.btn_ready, self.btn_start):
+            btn_row.addWidget(b)
+        v.addLayout(btn_row)
+        # Lobby list
+        self.lobby_list = QListWidget()
+        v.addWidget(self.lobby_list, 1)
+        # Player status
+        self.lobby_status = QTextEdit()
+        self.lobby_status.setReadOnly(True)
+        self.lobby_status.setFixedHeight(110)
+        v.addWidget(self.lobby_status)
+        # Wire handlers
+        self.btn_host.clicked.connect(self._on_host_lobby)
+        self.btn_join_refresh.clicked.connect(self._on_refresh_lobbies)
+        self.btn_ready.clicked.connect(self._on_toggle_ready)
+        self.btn_start.clicked.connect(self._on_start_lobby_game)
+        self.lobby_list.itemDoubleClicked.connect(self._on_join_selected_lobby)
+        self._on_refresh_lobbies()
+        self._lobby_poll_timer = QTimer(self)
+        self._lobby_poll_timer.timeout.connect(self._poll_lobby)
+        self._lobby_poll_timer.start(1000)
+
+        # Game panel wrapper (existing PlayArea)
+        game_wrap = QWidget()
+        gvl = QVBoxLayout(game_wrap)
+        gvl.setContentsMargins(0,0,0,0)
+        gvl.addWidget(self.play_area)
+
+        # NEW: action bar (human controls)
+        from PySide6.QtWidgets import QHBoxLayout
+        act_bar = QHBoxLayout()
+        self.btn_draw = QPushButton("Draw")
+        self.btn_play_land = QPushButton("Play Land")
+        self.btn_cast = QPushButton("Cast Cheapest")
+        self.btn_pass = QPushButton("Pass Phase")
+        for b in (self.btn_draw, self.btn_play_land, self.btn_cast, self.btn_pass):
+            act_bar.addWidget(b)
+        act_bar.addStretch(1)
+        gvl.addLayout(act_bar)
+
+        self.btn_draw.clicked.connect(self._human_draw_button)
+        self.btn_play_land.clicked.connect(self._human_play_land_button)
+        self.btn_cast.clicked.connect(self._human_cast_button)
+        self.btn_pass.clicked.connect(self._human_pass_phase)
+
+        self.play_stack.addWidget(lob_w)
+        self.play_stack.addWidget(game_wrap)
+        # Initially show lobby instead of immediate game (flip state)
+        self._in_game = False
+        self.play_stack.setCurrentIndex(0)
+        return self.play_stack
+
+    def _refresh_lobby_deck_list(self):
+        self.lobby_deck_combo.clear()
+        decks_dir = os.path.join('data','decks')
+        if not os.path.isdir(decks_dir):
+            return
+        for fname in sorted(os.listdir(decks_dir)):
+            if fname.lower().endswith('.txt'):
+                self.lobby_deck_combo.addItem(fname, os.path.join(decks_dir,fname))
+
+    def _on_refresh_lobbies(self):
+        self.lobby_list.clear()
+        for lob in LobbyServer.list_lobbies():
+            item = QListWidgetItem(f"{lob.lobby_id[:8]}  Players:{len(lob.players)}{' *started' if lob.started else ''}")
+            item.setData(Qt.UserRole, lob.lobby_id)
+            self.lobby_list.addItem(item)
+
+    def _on_host_lobby(self):
+        deck_path = self.lobby_deck_combo.currentData()
+        lob = LobbyServer.create_lobby(self._local_player_name, deck_path)
+        self._active_lobby_id = lob.lobby_id
+        self.btn_ready.setEnabled(True)
+        self._update_lobby_status(lob)
+
+    def _on_join_selected_lobby(self, item):
+        lobby_id = item.data(Qt.UserRole)
+        lob = LobbyServer.join(lobby_id, self._local_player_name)
+        if not lob:
+            QMessageBox.warning(self,"Join","Unable to join lobby.")
+            return
+        self._active_lobby_id = lobby_id
+        deck_path = self.lobby_deck_combo.currentData()
+        if deck_path:
+            LobbyServer.set_deck(lobby_id, self._local_player_name, deck_path)
+        self.btn_ready.setEnabled(True)
+        self._update_lobby_status(lob)
+
+    def _on_toggle_ready(self):
+        if not self._active_lobby_id: return
+        lob = next((l for l in LobbyServer.list_lobbies() if l.lobby_id==self._active_lobby_id), None)
+        if not lob: return
+        me = next((p for p in lob.players if p.name==self._local_player_name), None)
+        if not me: return
+        # set deck each toggle (in case changed)
+        deck_path = self.lobby_deck_combo.currentData()
+        if deck_path:
+            LobbyServer.set_deck(lob.lobby_id, me.name, deck_path)
+        LobbyServer.set_ready(lob.lobby_id, me.name, not me.ready)
+        lob = next((l for l in LobbyServer.list_lobbies() if l.lobby_id==self._active_lobby_id), None)
+        self._update_lobby_status(lob)
+
+    def _on_start_lobby_game(self):
+        if not self._active_lobby_id: return
+        if not LobbyServer.can_start(self._active_lobby_id):
+            QMessageBox.information(self,"Start","All players must have decks & be ready.")
+            return
+        lob = next((l for l in LobbyServer.list_lobbies() if l.lobby_id==self._active_lobby_id), None)
+        if not lob: return
+        LobbyServer.mark_started(self._active_lobby_id)
+        # Auto-create dummy AI if only one player present
+        if len(lob.players) < 2:
+            # pick any deck (current selection or fallback first deck)
+            decks_dir = os.path.join('data', 'decks')
+            deck_choice = self.lobby_deck_combo.currentData()
+            if not deck_choice and os.path.isdir(decks_dir):
+                for fname in sorted(os.listdir(decks_dir)):
+                    if fname.lower().endswith('.txt'):
+                        deck_choice = os.path.join(decks_dir, fname)
+                        break
+            lob.players.append(type("Tmp", (), {
+                "name": "GoldfishAI",
+                "deck_path": deck_choice,
+                "ready": True,
+                "is_host": False
+            })())
+        # Build specs
+        specs = []
+        for p in lob.players:
+            specs.append((p.name, p.deck_path, False if p.name == self._local_player_name else True))
+        new_state, ai_ids = new_game(specs, ai_enabled=True)
+        self.game = new_state
+        self.play_area.game = self.game
+        self.ai_controllers = build_ai_controllers(ai_ids)
+        enhance_ai_controllers(self.game, self.ai_controllers)
+        self._in_game = True
+        self.play_stack.setCurrentIndex(1)
+        # Only run setup if now multiplayer
+        if len(self.game.players) > 1:
+            self._initial_pregame_setup()
+        self._log_phase()
+
+    def _poll_lobby(self):
+        # Safe guards for early construction / no lobby
+        if not hasattr(self, '_active_lobby_id') or not hasattr(self, '_in_game'):
+            return
+        if self._active_lobby_id is None or self._in_game:
+            return
+        lob = next((l for l in LobbyServer.list_lobbies() if l.lobby_id == self._active_lobby_id), None)
+        if not lob:
+            self._active_lobby_id = None
+            return
+        self._update_lobby_status(lob)
+        me = next((p for p in lob.players if p.name == self._local_player_name), None)
+        self.btn_start.setEnabled(bool(me and me.is_host and LobbyServer.can_start(lob.lobby_id)))
+
+    def _update_lobby_status(self, lob):
+        if not lob:
+            self.lobby_status.setPlainText("No lobby selected.")
+            return
+        lines = [f"Lobby {lob.lobby_id}"]
+        for p in lob.players:
+            lines.append(f"{'[H]' if p.is_host else '   '} {p.name:12} Deck:{os.path.basename(p.deck_path) if p.deck_path else '-'}  {'READY' if p.ready else '...'}")
+        if LobbyServer.can_start(lob.lobby_id):
+            lines.append("All players ready. Host may start.")
+        self.lobby_status.setPlainText("\n".join(lines))
+
+    # --- modify _init_tabs to use lobby stack (NEW insertion) ---
     def _init_tabs(self):
         # Home Tab
-        home = QWidget()
+        home_bg_path = os.path.join('data', 'images', 'home_bg.png')
+        if os.path.exists(home_bg_path):
+            home = ScaledBackground(home_bg_path)  # NEW use painter-based scaling
+        else:
+            home = QWidget()
+        home.setObjectName("homeLanding")
         hl = QVBoxLayout(home)
-        hl.addWidget(QLabel("Welcome to MTG Commander (Qt Edition)."))
-        hl.addWidget(QLabel("- Build/validate decks, then play against a basic AI."))
-        hl.addWidget(QLabel("- Press H in Play tab for help overlay keys."))
+        hl.setContentsMargins(0,0,0,0)
+        hl.addStretch(1)
         self.tabs.addTab(home, "Home")
 
-        # Decks Tab (embedded editor)
-        decks_tab = QWidget()
-        dl = QHBoxLayout(decks_tab)
-
-        # Left: deck file list
-        self.deck_file_list = QListWidget()
-        self.deck_file_list.itemSelectionChanged.connect(self._on_select_deck_file)
-        dl.addWidget(self.deck_file_list, 1)
-
-        # Middle: current deck contents
-        mid_box = QVBoxLayout()
-        mid_box.addWidget(QLabel("Deck (dbl-click remove / right-click commander)"))
-        self.deck_list_widget = QListWidget()
-        self.deck_list_widget.itemDoubleClicked.connect(self._remove_card_from_deck)
-        self.deck_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.deck_list_widget.customContextMenuRequested.connect(self._set_commander_from_deck)
-        mid_box.addWidget(self.deck_list_widget, 1)
-        self.save_deck_btn = QPushButton("Save Deck (.txt)")
-        self.save_deck_btn.clicked.connect(self._save_current_deck)
-        mid_box.addWidget(self.save_deck_btn)
-        dl.addLayout(mid_box, 1)
-
-        # Right: available cards
-        right_box = QVBoxLayout()
-        right_box.addWidget(QLabel("Available Cards (dbl-click add / right-click commander)"))
-        self.card_search = QLineEdit()
-        self.card_search.setPlaceholderText("Search cards...")
-        self.card_search.textChanged.connect(self._refresh_available_cards)
-        right_box.addWidget(self.card_search)
-        self.available_cards_widget = QListWidget()
-        self.available_cards_widget.itemDoubleClicked.connect(self._add_card_to_deck)
-        self.available_cards_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.available_cards_widget.customContextMenuRequested.connect(self._set_commander_from_available)
-        right_box.addWidget(self.available_cards_widget, 1)
-        dl.addLayout(right_box, 1)
-
+        # Decks Tab REPLACED
+        decks_tab = self._build_decks_tab()
         self.tabs.addTab(decks_tab, "Decks")
 
         # Play Tab
         play_tab = QWidget()
         pl = QVBoxLayout(play_tab)
-        pl.addWidget(self.play_area)
+        # Replace direct PlayArea with lobby/game stacked widget
+        pl.addWidget(self._build_play_tab_stack())
         self.tabs.addTab(play_tab, "Play")
 
-    # ----- Helpers -----
-    def _log_phase(self):
+    # --- NEW: build modern deck tab ---
+    def _build_decks_tab(self):
+        # FIX: ensure deck data attrs exist before using them (build tab now accesses them)
+        if not hasattr(self, 'current_deck_cards'):
+            self.current_deck_path = None
+            self.current_deck_cards = []
+            self.current_commander = None
+            self.deck_dir = os.path.join('data', 'decks')
+            os.makedirs(self.deck_dir, exist_ok=True)
+            self._card_db_list = get_card_name_list()
+
+        from PySide6.QtWidgets import (
+            QHBoxLayout, QVBoxLayout, QGroupBox,
+            QCheckBox, QListWidget, QPushButton, QLabel,
+            QLineEdit, QListWidgetItem, QSpacerItem, QSizePolicy
+        )
+        w = QWidget()
+        root = QHBoxLayout(w)
+        root.setContentsMargins(6,6,6,6)
+        root.setSpacing(10)
+
+        # Left Filters
+        filt_box = QVBoxLayout()
+        # NEW: deck file list (needed by _refresh_deck_file_list)
+        from PySide6.QtWidgets import QListWidget, QLabel  # local (already imported symbols OK)
+        filt_box.addWidget(QLabel("Deck Files"))
+        self.deck_file_list = QListWidget()
+        self.deck_file_list.itemSelectionChanged.connect(self._on_select_deck_file)
+        filt_box.addWidget(self.deck_file_list, 1)
+
+        # Adjust stretch: search + filters should come after file list
+        self.card_search = QLineEdit()
+        self.card_search.setPlaceholderText("Search card names (substring)...")
+        self.card_search.textChanged.connect(self._refresh_available_cards)
+        filt_box.addWidget(self.card_search)
+
+        color_group = QGroupBox("Color Identity (subset)")
+        cg_l = QHBoxLayout(color_group)
+        self.color_checks = {}
+        for sym in ['W','U','B','R','G','C']:
+            cb = QCheckBox(sym)
+            cb.stateChanged.connect(self._refresh_available_cards)
+            self.color_checks[sym] = cb
+            cg_l.addWidget(cb)
+        filt_box.addWidget(color_group)
+
+        clear_filters_btn = QPushButton("Clear Filters")
+        def _clr():
+            self.card_search.clear()
+            for cb in self.color_checks.values(): cb.setChecked(False)
+            self._refresh_available_cards()
+        clear_filters_btn.clicked.connect(_clr)
+        filt_box.addWidget(clear_filters_btn)
+        filt_box.addStretch(1)
+        root.addLayout(filt_box, 0)
+
+        # Center Card Grid
+        from PySide6.QtWidgets import QListWidget
+        self.card_grid = QListWidget()
+        self.card_grid.setViewMode(QListWidget.IconMode)
+        self.card_grid.setIconSize(QSize(150,210))
+        self.card_grid.setResizeMode(QListWidget.Adjust)
+        self.card_grid.setMovement(QListWidget.Static)
+        self.card_grid.setWordWrap(True)
+        self.card_grid.setSpacing(8)
+        self.card_grid.itemDoubleClicked.connect(self._add_card_to_deck)
+        # Backward compatibility for legacy method names
+        self.available_cards_widget = self.card_grid
+        root.addWidget(self.card_grid, 2)
+
+        # Right Deck Panel
+        deck_panel = QVBoxLayout()
+        deck_panel.addWidget(QLabel("Deck (dbl-click remove / right-click set commander)"))
+        self.deck_list_widget = QListWidget()
+        self.deck_list_widget.itemDoubleClicked.connect(self._remove_card_from_deck)
+        self.deck_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.deck_list_widget.customContextMenuRequested.connect(self._set_commander_from_deck)
+        deck_panel.addWidget(self.deck_list_widget, 1)
+
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self._save_current_deck)
+        clr_btn = QPushButton("Clear Deck")
+        def _clr_deck():
+            self.current_deck_cards.clear()
+            self.current_commander = None
+            self._refresh_deck_list_widget()
+        clr_btn.clicked.connect(_clr_deck)
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(clr_btn)
+        deck_panel.addLayout(btn_row)
+
+        self.deck_stats_label = QLabel("")
+        self.deck_stats_label.setStyleSheet("color:#ccc; font-size:11px;")
+        deck_panel.addWidget(self.deck_stats_label)
+        deck_panel.addStretch(1)
+        root.addLayout(deck_panel, 1)
+
+        # Initial populate (safe now that attributes exist)
+        self._refresh_available_cards()
+        self._refresh_deck_file_list()
+        self._refresh_deck_list_widget()
+        return w
+
+    # --- MODIFIED: refresh now feeds card grid instead of simple list ---
+    def _refresh_available_cards(self):
+        self._populate_card_grid()
+
+    # --- NEW helper: does card match filters ---
+    def _card_matches_filters(self, card):
+        # Search
+        q = self.card_search.text().strip().lower()
+        if q and q not in card['name'].lower():
+            return False
+        # Colors
+        chosen = {sym for sym, cb in self.color_checks.items() if cb.isChecked()}
+        if chosen:
+            # Treat 'C' as colorless identity requirement
+            cid = set(card.get('color_identity') or [])
+            if not cid and 'C' not in chosen:
+                return False
+            # card colors must be subset of selected (ignoring 'C')
+            real_chosen = {c for c in chosen if c != 'C'}
+            if cid and not cid.issubset(real_chosen):
+                return False
+            if not cid and 'C' not in chosen:
+                return False
+        return True
+
+    # --- NEW builder for grid ---
+    def _populate_card_grid(self):
+        from PySide6.QtWidgets import QListWidgetItem
+        self.card_grid.clear()
+        try:
+            by_id, by_name_lower, by_norm, path = load_card_db()
+        except Exception:
+            return
+        added = 0
+        # Iterate by original names (by_id values) to retain casing
+        for c in by_id.values():
+            if not self._card_matches_filters(c):
+                continue
+            item = QListWidgetItem(c['name'])
+            # Attempt image
+            img_path = None
+            try:
+                maybe = ensure_card_image(c['id'])
+                if isinstance(maybe, str) and os.path.exists(maybe):
+                    img_path = maybe
+                else:
+                    # fallback common cache path
+                    cp = os.path.join('cache','cards', f"{c['id']}.jpg")
+                    if os.path.exists(cp):
+                        img_path = cp
+            except Exception:
+                pass
+            if img_path:
+                from PySide6.QtGui import QIcon, QPixmap
+                pm = QPixmap(img_path)
+                if not pm.isNull():
+                    item.setIcon(QIcon(pm))
+            item.setData(Qt.UserRole, c['name'])
+            self.card_grid.addItem(item)
+            added += 1
+            if added >= 400:  # performance cap
+                break
+
+    # --- MODIFIED: deck list refresh adds stats ---
+    def _refresh_deck_list_widget(self):
+        # Count
+        counts = {}
+        for n in self.current_deck_cards:
+            counts[n] = counts.get(n, 0) + 1
+        total = sum(counts.values())
+        self.deck_list_widget.clear()
+        for name in sorted(counts):
+            label = f"{counts[name]}x {name}"
+            if self.current_commander and name == self.current_commander:
+                label += " [CMD]"
+            it = QListWidgetItem(label)
+            it.setData(Qt.UserRole, name)
+            self.deck_list_widget.addItem(it)
+        # Basic stats
+        self.deck_stats_label.setText(f"Cards: {total}  Commander: {self.current_commander or '-'}")
+
+    # ---------------- NEW: Human turn helpers ----------------
+    def _ensure_turn_draw(self):
+        """
+        Auto draw 1 card for active player when reaching MAIN1 and not yet drawn.
+        Resets per player at UNTAP.
+        """
+        phase = self.game.phase.upper()
+        ap = self.game.active_player
+        player = self.game.players[ap]
+        if phase == 'MAIN1' and not getattr(player, '_drew_this_turn', False):
+            self._draw_card(player)
+            player._drew_this_turn = True
+            if self.logging_enabled:
+                print(f"[TURN] {player.name} drew for turn ({len(player.hand)} in hand)")
+
+    def _reset_turn_flags_if_needed(self):
+        if self.game.phase.upper() == 'UNTAP':
+            # Clear per-player draw markers & per-turn land usage
+            for pl in self.game.players:
+                if hasattr(pl, '_drew_this_turn'):
+                    delattr(pl, '_drew_this_turn')
+            self._human_land_played_this_turn = False
+
+    def _draw_card(self, player):
+        if player.library:
+            player.hand.append(player.library.pop(0))
+        else:
+            if self.logging_enabled:
+                print(f"[DRAW] {player.name} would mill out (library empty)")
+
+    # ---- land / cast helpers (mirrors AI minimal logic) ----
+    def _human_available_untapped_lands(self):
+        lands = []
+        you = self.game.players[0]
+        for perm in getattr(you, 'battlefield', []):
+            c = getattr(perm, 'card', perm)
+            if 'Land' in c.types and not getattr(perm, 'tapped', False):
+                lands.append(perm)
+        return lands
+
+    def _human_tap_for_generic(self, need):
+        tapped = 0
+        you_id = 0
+        for perm in list(self._human_available_untapped_lands()):
+            if tapped >= need:
+                break
+            try:
+                if hasattr(self.game, 'tap_for_mana'):
+                    self.game.tap_for_mana(you_id, perm)
+                else:
+                    perm.tapped = True
+            except Exception:
+                perm.tapped = True
+            tapped += 1
+        return tapped >= need
+
+    def _human_card_total_cost(self, card):
+        from engine.mana import parse_mana_cost
+        cost_dict = parse_mana_cost(getattr(card, 'mana_cost_str', ''))
+        if not cost_dict:
+            if isinstance(card.mana_cost, int):
+                return card.mana_cost
+            try:
+                return int(card.mana_cost)
+            except Exception:
+                return 0
+        return sum(cost_dict.values())
+
+    def _human_play_first_land(self):
+        if self._human_land_played_this_turn:
+            return
+        you = self.game.players[0]
+        for card in list(you.hand):
+            if 'Land' in card.types:
+                # Prefer engine API
+                try:
+                    if hasattr(self.game, 'play_land'):
+                        self.game.play_land(0, card)
+                    else:
+                        you.hand.remove(card)
+                        if hasattr(self.game, 'enter_battlefield'):
+                            self.game.enter_battlefield(0, card)
+                        else:
+                            you.battlefield.append(type("Perm", (), {"card": card, "tapped": False})())
+                    self._human_land_played_this_turn = True
+                    if self.logging_enabled:
+                        print(f"[LAND] Played {card.name}")
+                    break
+                except Exception as ex:
+                    if self.logging_enabled:
+                        print(f"[LAND][ERR] {ex}")
+                break
+
+    def _human_cast_cheapest(self):
+        you = self.game.players[0]
+        # Gather castable (simple permanent spells)
+        spells = [c for c in list(you.hand) if 'Land' not in c.types]
+        if not spells:
+            return
+        spells.sort(key=self._human_card_total_cost)
+        for card in spells:
+            cost = self._human_card_total_cost(card)
+            if cost == 0:
+                try:
+                    self.game.cast_spell(0, card)
+                    if self.logging_enabled:
+                        print(f"[CAST] {card.name} (0)")
+                    return
+                except Exception:
+                    continue
+            if len(self._human_available_untapped_lands()) >= cost and self._human_tap_for_generic(cost):
+                try:
+                    self.game.cast_spell(0, card)
+                    if self.logging_enabled:
+                        print(f"[CAST] {card.name} ({cost})")
+                    return
+                except Exception as ex:
+                    if self.logging_enabled:
+                        print(f"[CAST][FAIL] {card.name}: {ex}")
+        # no success
+
+    # ---- Button callbacks ----
+    def _human_draw_button(self):
+        self._draw_card(self.game.players[0])
         if self.logging_enabled:
-            print(f"[PHASE] Active={self.game.players[self.game.active_player].name} - {self.game.phase}")
+            print(f"[DRAW] Manual draw -> {len(self.game.players[0].hand)} in hand")
+
+    def _human_play_land_button(self):
+        self._human_play_first_land()
+
+    def _human_cast_button(self):
+        self._human_cast_cheapest()
+
+    def _human_pass_phase(self):
+        if hasattr(self.game, 'next_phase'):
+            self.game.next_phase()
+            self._log_phase()
 
     def keyPressEvent(self, e):
         # Global hotkeys
@@ -306,22 +1043,20 @@ class MainWindow(QMainWindow):
                 self.play_area.update()
 
     def _maybe_ai_step(self):
-        # Skip if game over already
+        # NEW: reset flags & ensure auto draw
+        self._reset_turn_flags_if_needed()
+        self._ensure_turn_draw()
+        # Skip if game over already or incomplete player set
         if self._ai_disabled_after_game:
             return
-        if self.game.check_game_over():
-            self._ai_disabled_after_game = True
-            winners = [p for p in self.game.players if p.life > 0]
-            msg = 'You Win!' if any(p.player_id != 0 and p.life <= 0 for p in self.game.players) else 'You Lose!'
-            if len(self.game.players) > 2:
-                msg = "Winners: " + ", ".join(p.name for p in winners) if winners else "All Lost"
-            QMessageBox.information(self, "Game Over", msg)
-            self._phase_timer.stop()
+        if len(self.game.players) < 2:
+            # Just keep UI responsive without game over logic
+            self.play_area.update()
             return
         # Basic AI only for its controller & relevant phases
         if self.game.active_player in self.ai_controllers and self.game.phase in ('MAIN1','COMBAT_DECLARE'):
             try:
-                self.ai_controllers[self.game.active_player].take_turn(self.game, self.play_area)
+                self.ai_controllers[self.game.active_player].take_turn(self.game)
             except Exception as ex:
                 print(f"[AI][ERR] {ex}")
         self.play_area.update()
@@ -374,43 +1109,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Deck Load Error", str(e))
             self.current_deck_cards = []
         self._refresh_deck_list_widget()
-
-    def _refresh_deck_list_widget(self):
-        self.deck_list_widget.clear()
-        # Count
-        counts = {}
-        for n in self.current_deck_cards:
-            counts[n] = counts.get(n, 0) + 1
-        for name in sorted(counts):
-            label = f"{counts[name]}x {name}"
-            if self.current_commander and name == self.current_commander:
-                label += " [CMD]"
-            it = QListWidgetItem(label)
-            it.setData(Qt.UserRole, name)
-            self.deck_list_widget.addItem(it)
-
-    def _refresh_available_cards(self):
-        q = self.card_search.text().lower().strip()
-        self.available_cards_widget.clear()
-        if not q:
-            # show first N for speed
-            subset = self._card_db_list[:500]
-            for name_lower in subset:
-                # convert back to original case via lookup
-                # cheap: title-case fallback; accurate: use by_id mapping (already holds names)
-                self.available_cards_widget.addItem(QListWidgetItem(next(iter({c['name'] for c in load_card_db()[0].values() if c['name'].lower()==name_lower}), name_lower)))
-            return
-        # filter
-        added = 0
-        for c in load_card_db()[0].values():
-            nm = c['name']
-            if q in nm.lower():
-                it = QListWidgetItem(nm)
-                it.setData(Qt.UserRole, nm)
-                self.available_cards_widget.addItem(it)
-                added += 1
-                if added >= 500:
-                    break
 
     # --- Actions ---
     def _add_card_to_deck(self, item):
@@ -489,6 +1187,16 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self,"Reload","Player 0 deck reloaded.")
         self._log_phase()
 
+    def _log_phase(self):  # (RE)ADDED safeguard method
+        if not getattr(self, 'logging_enabled', False):
+            return
+        try:
+            ap = getattr(self.game, 'active_player', 0)
+            pl_name = self.game.players[ap].name if self.game.players else '?'
+            print(f"[PHASE] Active={pl_name} - {getattr(self.game, 'phase', '?')}")
+        except Exception:
+            pass
+
 # -------- Native deck (.txt) parsing (replaces external parser) --------
 def parse_deck_txt_file(path: str):
     """
@@ -546,7 +1254,7 @@ def save_deck_txt(path: str, commander_name: str, card_names: list[str]):
 
 def main():
     args = parse_args()
-    specs = _deck_specs_from_args(args.deck)
+    specs = _deck_specs_from_args(getattr(args, 'deck', None))
     game, ai_ids = new_game(specs if specs else None, ai_enabled=not args.no_ai)
     app = QApplication(sys.argv)
     w = MainWindow(game, ai_ids, args)

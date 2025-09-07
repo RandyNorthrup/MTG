@@ -1,8 +1,8 @@
 import os
-from PySide6.QtWidgets import QWidget, QMenu
+from PySide6.QtWidgets import QWidget, QMenu, QDialog, QVBoxLayout, QLabel, QPushButton, QListWidget, QListWidgetItem, QHBoxLayout
 from PySide6.QtGui import (QPainter, QMouseEvent, QPaintEvent, QPen, QColor,
-                           QPixmap)
-from PySide6.QtCore import Qt, QTimer, QRect, QPoint
+                           QPixmap, QDrag, QDropEvent, QDragEnterEvent)
+from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QMimeData
 from config import CARD_W, CARD_H, HAND_HEIGHT, PADDING, ZOOM_W, ZOOM_H
 from image_cache import ensure_card_image
 from engine.mana import ManaPool, parse_mana_cost, GENERIC_KEY  # NEW
@@ -34,11 +34,69 @@ def _load_card_back():
     return None
 
 
+class _ManaSelectDialog(QDialog):
+    """Simple dialog: user taps lands to pay remaining cost (colored/generic)."""
+    def __init__(self, parent, player, cost_dict, produce_cb):
+        super().__init__(parent)
+        self.setWindowTitle("Select Mana Sources")
+        self.player = player
+        self.cost_remaining = dict(cost_dict)
+        self.produce_cb = produce_cb
+        lay = QVBoxLayout(self)
+        self.info_lbl = QLabel(self._fmt())
+        lay.addWidget(self.info_lbl)
+        self.listw = QListWidget()
+        for perm in player.battlefield:
+            if 'Land' in perm.card.types and not perm.tapped:
+                it = QListWidgetItem(perm.card.name)
+                it.setData(Qt.UserRole, perm)
+                self.listw.addItem(it)
+        lay.addWidget(self.listw)
+        btns = QHBoxLayout()
+        self.done_btn = QPushButton("Done")
+        self.done_btn.clicked.connect(self.accept)
+        self.tap_btn = QPushButton("Tap Selected")
+        self.tap_btn.clicked.connect(self._tap_one)
+        btns.addWidget(self.tap_btn); btns.addWidget(self.done_btn)
+        lay.addLayout(btns)
+
+    def _fmt(self):
+        parts = []
+        for k,v in self.cost_remaining.items():
+            if v>0:
+                parts.append(f"{k}:{v}")
+        return "Remaining cost: " + (" ".join(parts) if parts else "None")
+
+    def _tap_one(self):
+        it = self.listw.currentItem()
+        if not it: return
+        perm = it.data(Qt.UserRole)
+        if perm.tapped: return
+        # Produce a single mana symbol heuristically (basic land name)
+        symbol = GENERIC_KEY
+        nm = perm.card.name.lower()
+        for t,sym in [('plains','W'),('island','U'),('swamp','B'),('mountain','R'),('forest','G')]:
+            if t in nm:
+                symbol = sym; break
+        self.produce_cb(perm, symbol)
+        # decrement colored first if matches, else generic
+        if symbol in self.cost_remaining and self.cost_remaining[symbol]>0:
+            self.cost_remaining[symbol]-=1
+        else:
+            if self.cost_remaining.get(GENERIC_KEY,0)>0:
+                self.cost_remaining[GENERIC_KEY]-=1
+        it.setText(it.text()+" (tapped)")
+        self.info_lbl.setText(self._fmt())
+
+    def remaining(self):
+        return sum(v for v in self.cost_remaining.values() if v>0)
+
 class PlayArea(QWidget):
     def __init__(self, game, parent=None):
         super().__init__(parent)
         self.game = game
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)  # NEW for drag/drop
 
         self.hover_card = None
         self.playable_ids = set()
@@ -57,6 +115,8 @@ class PlayArea(QWidget):
         self._refresh_timer.timeout.connect(self._update_playables)
         self._refresh_timer.start(400)
         self._update_playables()
+
+        self._drag_card_ref = None  # NEW
 
     # ---------- Phases ----------
     def _phase_sequence(self):
@@ -153,8 +213,22 @@ class PlayArea(QWidget):
         mid = rect.height() // 2
         top_panel = QRect(rect.left(), rect.top(), rect.width(), mid)
         bot_panel = QRect(rect.left(), mid, rect.width(), rect.height() - mid)
-        self._draw_player_panel(p, self.game.players[1], top_panel, True)
-        self._draw_player_panel(p, self.game.players[0], bot_panel, False)
+        players_len = len(self.game.players)
+        # Top (opponent or placeholder)
+        if players_len > 1:
+            self._draw_player_panel(p, self.game.players[1], top_panel, True)
+        else:
+            p.save()
+            p.fillRect(top_panel, QColor(32,32,36))
+            p.setPen(QPen(QColor(70,70,80),1))
+            p.drawRect(top_panel.adjusted(0,0,-1,-1))
+            p.setPen(QColor(210,210,215))
+            p.drawText(top_panel.adjusted(6,6,-6,-6), Qt.AlignCenter,
+                       "Waiting for opponent...\n(Host Start will add AI if none)")
+            p.restore()
+        # Bottom (player 0 if exists)
+        if players_len > 0:
+            self._draw_player_panel(p, self.game.players[0], bot_panel, False)
 
     def _draw_player_panel(self, p: QPainter, player, r: QRect, is_top: bool):
         p.save()
@@ -696,6 +770,156 @@ class PlayArea(QWidget):
                     if card.id == perm.card.id:
                         p.drawRoundedRect(r.adjusted(1,1,-1,-1),6,6)
         p.end()
+
+    # ---------------- Drag & Drop (NEW) ----------------
+    def mousePressEvent(self, e: QMouseEvent):
+        # Keep existing right-click activation logic etc.
+        # ...existing code before play/cast logic...
+        if e.button() == Qt.LeftButton:
+            card = self._hit_hand_card(e.position().toPoint()) if hasattr(self, '_hit_hand_card') else None
+            if card:
+                self._drag_card_ref = card
+        # defer to existing logic
+        # ...existing code...
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e: QMouseEvent):
+        if self._drag_card_ref:
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setText(getattr(self._drag_card_ref,'id',''))
+            drag.setMimeData(mime)
+            drag.exec(Qt.MoveAction)
+            self._drag_card_ref = None
+        super().mouseMoveEvent(e)
+
+    def dragEnterEvent(self, e: QDragEnterEvent):
+        if e.mimeData().text():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e: QDropEvent):
+        cid = e.mimeData().text()
+        # Find card in player 0 hand
+        pl = self.game.players[0]
+        card = next((c for c in pl.hand if c.id == cid), None)
+        if card:
+            self._attempt_play_card(card)
+        e.acceptProposedAction()
+
+    # --------------- Double click / context menu (NEW) ---------------
+    def contextMenuEvent(self, ev):
+        # Determine if hand card
+        card = self._hit_hand_card(ev.pos()) if hasattr(self, '_hit_hand_card') else None
+        if not card:
+            return
+        m = QMenu(self)
+        act_play = m.addAction("Play")
+        act = m.exec(ev.globalPos())
+        if act == act_play:
+            self._attempt_play_card(card)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button()==Qt.LeftButton:
+            card = self._hit_hand_card(e.position().toPoint()) if hasattr(self, '_hit_hand_card') else None
+            if card:
+                self._attempt_play_card(card)
+        super().mouseDoubleClickEvent(e)
+
+    # --------------- Core play logic (NEW) ---------------
+    def _attempt_play_card(self, card):
+        ps = self.game.players[0]
+        if card not in ps.hand:
+            return
+        # Phase / land rule
+        if 'Land' in card.types:
+            # Simple: allow once per turn; track flag
+            if getattr(ps, '_land_played_turn', self.game.turn_number if hasattr(self.game,'turn_number') else 0) == (self.game.turn_number if hasattr(self.game,'turn_number') else 0):
+                QMessageBox.information(self,"Play Land","Land already played this turn.")
+                return
+            self._play_land(card, ps)
+            return
+        # Spell casting with mana verification
+        cost_dict = parse_mana_cost(getattr(card,'mana_cost_str',''))
+        if not cost_dict:
+            if isinstance(card.mana_cost,int) and card.mana_cost>0:
+                cost_dict = {GENERIC_KEY: card.mana_cost}
+        if not hasattr(ps,'mana_pool'):
+            ps.mana_pool = ManaPool()
+        pool = ps.mana_pool
+        if pool.can_pay(cost_dict):
+            pool.pay(cost_dict)
+            self._cast_spell(card, ps)
+            return
+        # Need user-assisted tapping
+        remain = self._cost_minus_pool(cost_dict, pool)
+        if remain:
+            dlg = _ManaSelectDialog(self, ps, remain,
+                                    produce_cb=lambda perm, sym: self._tap_land_for_symbol(ps, perm, sym))
+            if dlg.exec():
+                # After user tapping, re-eval
+                new_remain = self._cost_minus_pool(cost_dict, pool)
+                if new_remain:
+                    QMessageBox.warning(self,"Casting","Still insufficient mana.")
+                    return
+                pool.pay(cost_dict)
+                self._cast_spell(card, ps)
+
+    def _cost_minus_pool(self, cost_dict, pool):
+        """Return remaining cost after current pool applied (greedy)."""
+        remain = dict(cost_dict)
+        # subtract colored first
+        for c in ['W','U','B','R','G']:
+            need = remain.get(c,0)
+            have = pool.pool.get(c,0)
+            if need>0:
+                used = min(need, have)
+                remain[c]-=used
+        # generic
+        gen_need = remain.get(GENERIC_KEY,0)
+        if gen_need>0:
+            # sum available generic + surplus colored
+            surplus = pool.pool.get(GENERIC_KEY,0)
+            for c in ['W','U','B','R','G']:
+                extra = pool.pool.get(c,0) - max(0, cost_dict.get(c,0))
+                if extra>0:
+                    surplus += extra
+            gen_used = min(gen_need, surplus)
+            remain[GENERIC_KEY]-=gen_used
+        # filter zeros
+        return {k:v for k,v in remain.items() if v>0}
+
+    def _tap_land_for_symbol(self, player, perm, symbol):
+        # Reuse existing tap_for_mana but suppress adding incorrect symbol logic (we just add chosen)
+        if hasattr(self.game,'tap_for_mana'):
+            try:
+                self.game.tap_for_mana(player.player_id, perm)
+            except Exception:
+                perm.tapped = True
+        else:
+            perm.tapped = True
+        if not hasattr(player,'mana_pool'):
+            from engine.mana import ManaPool
+            player.mana_pool = ManaPool()
+        player.mana_pool.add(symbol)
+
+    def _play_land(self, card, player):
+        try:
+            if hasattr(self.game,'play_land'):
+                self.game.play_land(player.player_id, card)
+            else:
+                player.hand.remove(card)
+                player.battlefield.append(type("Perm",(),{"card":card,"tapped":False})())
+            player._land_played_turn = getattr(self.game,'turn_number',0)
+            self.update()
+        except Exception as ex:
+            QMessageBox.warning(self,"Play Land", str(ex))
+
+    def _cast_spell(self, card, player):
+        try:
+            self.game.cast_spell(player.player_id, card)
+        except Exception as ex:
+            QMessageBox.warning(self,"Cast Failed", str(ex))
+        self.update()
 
 # --- helper outside class ---
 def _find_perm(game, card_id):
