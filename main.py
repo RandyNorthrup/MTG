@@ -7,7 +7,6 @@ from config import *
 from ui.ui_manager import PlayArea
 from ui.home_tab import build_home_tab
 from ui.decks_tab import DecksTabManager
-from engine.phase_hooks import install_phase_log_deduper  # CHANGED: only deduper needed
 from ui.game_app_api import GameAppAPI
 from engine.game_init import parse_args, create_initial_game, new_game
 from image_cache import init_image_cache, teardown_cache, repair_cache
@@ -20,7 +19,6 @@ class MainWindow(QMainWindow):
         self.args = args
         self.api = GameAppAPI(self, game, ai_ids, args, new_game)
         self.controller = self.api.controller
-        install_phase_log_deduper(self.controller)
         self.game = self.api.game
         # REMOVED: embedded PlayArea & phase machinery (moved to GameWindow)
         self.logging_enabled = self.controller.logging_enabled
@@ -55,6 +53,12 @@ class MainWindow(QMainWindow):
         self.api.handle_key(e.key())
 
     def closeEvent(self, ev):  # ADDED graceful cache teardown
+        # ADDED: ensure all auxiliary game windows / debug windows closed
+        try:
+            if hasattr(self, 'api'):
+                self.api.shutdown()
+        except Exception:
+            pass
         teardown_cache()
         super().closeEvent(ev)
 

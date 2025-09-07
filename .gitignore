@@ -31,3 +31,6 @@ data/img_cache/
 # Type / test cache
 .pytest_cache/
 .mypy_cache/
+
+# Runtime generated game id registry
+data/game_ids.txt

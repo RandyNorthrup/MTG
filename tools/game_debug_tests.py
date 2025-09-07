@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QMessageBox
+from PySide6.QtWidgets import QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QMessageBox, QLineEdit, QTabWidget, QPlainTextEdit
 from PySide6.QtCore import Qt, QTimer
 
 class GameDebugWindow(QWidget):
@@ -47,16 +47,49 @@ class GameDebugWindow(QWidget):
         row3.addStretch(1)
         root.addLayout(row3)
 
+        # --- NEW: window size display row ---
+        size_row = QHBoxLayout()
+        self.main_size_box = QLineEdit(); self.main_size_box.setReadOnly(True)
+        self.game_size_box = QLineEdit(); self.game_size_box.setReadOnly(True)
+        for w, lab in [(self.main_size_box, "Main"), (self.game_size_box, "Game")]:
+            w.setFixedWidth(150)
+            size_row.addWidget(QLabel(lab+":"), 0)
+            size_row.addWidget(w, 0)
+        size_row.addStretch(1)
+        root.addLayout(size_row)
+
+        # --- NEW: tabs for Log / Verbose ---
+        self._tabs = QTabWidget()
+        # Preserve existing log box: assume self.log_box already created above; if not, adapt below.
+        # If log_box not yet created at this point in original file, move this block after its creation.
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setFixedHeight(140)
         self.log_box.setStyleSheet("font:10pt Consolas,monospace;")
-        root.addWidget(self.log_box)
+        self.verbose_box = QPlainTextEdit()
+        self.verbose_box.setReadOnly(True)
+        self.verbose_box.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self._tabs.addTab(self.log_box, "Log")
+        self._tabs.addTab(self.verbose_box, "Verbose")
+        root.addWidget(self._tabs, 1)
+
+        # Control row for verbose refresh
+        verb_row = QHBoxLayout()
+        self.btn_refresh_verbose = QPushButton("Refresh Verbose")
+        self.btn_refresh_verbose.clicked.connect(self._refresh_verbose)
+        verb_row.addWidget(self.btn_refresh_verbose)
+        verb_row.addStretch(1)
+        root.addLayout(verb_row)
+        # Initial fill
+        self._refresh_verbose()
 
         # Periodic info refresh
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._update_info)
         self._refresh_timer.start(1200)
+
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)  # ADDED keep on top
+        self._update_window_sizes()  # ADDED initial size fill
 
     # --- UI helpers ---
     def _mk_btn(self, text, slot):
@@ -69,6 +102,8 @@ class GameDebugWindow(QWidget):
 
     def _update_info(self):
         self.info_lbl.setText(self._build_info_text())
+        self._update_window_sizes()
+        self._refresh_verbose(auto=True)
 
     def _build_info_text(self):
         try:
@@ -96,6 +131,91 @@ class GameDebugWindow(QWidget):
             except Exception:
                 pass
         self._update_info()
+
+    # --- NEW ---
+    def _update_window_sizes(self):
+        try:
+            mw = self.main_window
+            gw = getattr(getattr(mw, 'api', None), '_game_window', None)
+            if mw:
+                self.main_size_box.setText(f"{mw.width()}x{mw.height()}")
+            if gw:
+                self.game_size_box.setText(f"{gw.width()}x{gw.height()}")
+            else:
+                self.game_size_box.setText("(closed)")
+        except Exception:
+            pass
+
+    # --- NEW: Verbose dump helpers ---
+    def _build_verbose_dump(self):
+        g = self.game
+        if not g:
+            return "No game loaded."
+        lines = []
+        try:
+            lines.append(f"GameID: {getattr(g, 'game_id', 'N/A')}")
+            lines.append(f"Phase: {getattr(g, 'phase', '?')}")
+            lines.append(f"Active Player: {getattr(g, 'active_player', '?')}")
+            if hasattr(g, 'stack'):
+                try:
+                    stack_items = getattr(g.stack, 'items', [])
+                except Exception:
+                    stack_items = []
+                lines.append(f"Stack ({len(stack_items)}):")
+                for i, it in enumerate(stack_items):
+                    lines.append(f"  {i}: {getattr(it, 'name', type(it).__name__)}")
+            lines.append("Players:")
+            for p in getattr(g, 'players', []):
+                lines.append(f"  [{p.player_id}] {p.name}  Life={getattr(p, 'life', '?')} "
+                             f"Hand={len(getattr(p, 'hand', []))} "
+                             f"Lib={len(getattr(p, 'library', []))} "
+                             f"GY={len(getattr(p, 'graveyard', [])) if hasattr(p,'graveyard') else 0} "
+                             f"BF={len(getattr(p, 'battlefield', [])) if hasattr(p,'battlefield') else 0}")
+                # Commander
+                if getattr(p, 'commander', None):
+                    lines.append(f"     Commander: {p.commander.name}")
+                # Battlefield detail (limit)
+                bf = getattr(p, 'battlefield', [])[:12]
+                if bf:
+                    lines.append("     Battlefield:")
+                    for perm in bf:
+                        try:
+                            status = []
+                            if getattr(perm, 'tapped', False): status.append('T')
+                            if getattr(perm, 'summoning_sick', getattr(perm,'summoning_sickness', False)): status.append('S')
+                            ident = "/".join([str(getattr(perm,'power','?')),
+                                              str(getattr(perm,'toughness','?'))]) if 'Creature' in getattr(perm,'types',[]) else ''
+                            lines.append(f"       - {perm.name}{' ['+ident+']' if ident else ''}"
+                                         f"{' ('+', '.join(status)+')' if status else ''}")
+                        except Exception:
+                            continue
+            # Potential attackers (active player)
+            ap = getattr(g, 'active_player', None)
+            if ap is not None and ap < len(getattr(g,'players',[])):
+                pl = g.players[ap]
+                attackers = []
+                for c in getattr(pl,'battlefield',[]):
+                    try:
+                        if 'Creature' not in getattr(c,'types',[]): continue
+                        if getattr(c,'tapped',False): continue
+                        sick = getattr(c,'summoning_sick', getattr(c,'summoning_sickness', False))
+                        if sick and not (getattr(c,'haste',False) or
+                                         ('Haste' in getattr(c,'keywords',[])) or
+                                         ('haste' in getattr(c,'text','').lower())):
+                            continue
+                        attackers.append(c.name)
+                    except Exception:
+                        pass
+                lines.append(f"Potential Attackers ({len(attackers)}): {', '.join(attackers) if attackers else '-'}")
+        except Exception as ex:
+            lines.append(f"[ERROR building verbose dump: {ex}]")
+        return "\n".join(lines)
+
+    def _refresh_verbose(self, auto=False):
+        # If user switched away and auto refresh, skip heavy repaint
+        if auto and self._tabs.currentWidget() is not self.verbose_box:
+            return
+        self.verbose_box.setPlainText(self._build_verbose_dump())
 
     # --- Button actions ---
     def _advance_phase(self):

@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QStackedWidget
+from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QStackedWidget, QMessageBox
 from PySide6.QtCore import Qt
 from ui.ui_manager import PlayArea
 from engine.phase_hooks import update_phase_ui as _phase_update, install_phase_log_deduper
@@ -6,6 +6,7 @@ from engine.phase_hooks import update_phase_ui as _phase_update, install_phase_l
 class GameWindow(QMainWindow):
     def __init__(self, api, game_id: str):
         super().__init__()
+        self.setAttribute(Qt.WA_DeleteOnClose, True)  # ensure cleanup
         self.api = api
         self.controller = api.controller
         install_phase_log_deduper(self.controller)
@@ -19,13 +20,14 @@ class GameWindow(QMainWindow):
         v.setContentsMargins(0,0,0,0); v.setSpacing(2)
         top = QHBoxLayout()
         btn_close = QPushButton("Concede / Close")
-        btn_phase = QPushButton("Advance Phase")          # ADDED
-        btn_ai = QPushButton("AI Step")                   # ADDED
-        btn_phase.clicked.connect(self._advance_phase)    # ADDED
-        btn_ai.clicked.connect(self._ai_step)             # ADDED
+        btn_close.clicked.connect(self.close)
+        self.btn_end_phase = QPushButton("End Phase")
+        self.btn_end_phase.clicked.connect(self._end_phase)
+        self.btn_skip_combat = QPushButton("Skip Combat")
+        self.btn_skip_combat.clicked.connect(self._skip_combat_confirm)
         top.addWidget(btn_close)
-        top.addWidget(btn_phase)
-        top.addWidget(btn_ai)
+        top.addWidget(self.btn_end_phase)
+        top.addWidget(self.btn_skip_combat)
         top.addStretch(1)
         v.addLayout(top)
         self.play_area = PlayArea(self.game)
@@ -37,19 +39,121 @@ class GameWindow(QMainWindow):
         root = QWidget(); root_l = QVBoxLayout(root); root_l.setContentsMargins(0,0,0,0)
         root_l.addWidget(self.play_stack, 1)
         self.setCentralWidget(root)
+        self._refresh_combat_buttons()
         _phase_update(self)
 
-    def _advance_phase(self):  # ADDED
+        # --- UPDATED positioning (no parenting / no always-on-top) ---
+        mw = getattr(api, 'w', None)
+        if mw:
+            try:
+                g = mw.frameGeometry()
+                self.resize(int(g.width()*0.9), int(g.height()*0.9))
+                c = g.center()
+                self.move(c.x() - self.width()//2, c.y() - self.height()//2)
+            except Exception:
+                pass
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _current_phase(self):
+        return getattr(getattr(self.api, 'game', None), 'phase', 'Beginning')
+
+    def _is_my_turn(self):  # ADDED
+        g = getattr(self.api, 'game', None)
+        if not g or not hasattr(g, 'active_player'):
+            return False
+        # Assuming local human player is index 0
+        return g.active_player == 0
+
+    def _refresh_combat_buttons(self):
+        # UPDATED: gate buttons by whose turn it is
+        ph = self._current_phase()
+        waiting = bool(getattr(self.api.controller, '_combat_wait_attackers', False) or
+                       getattr(self.api.controller, '_combat_waiting_for_attackers', False))
+        my_turn = self._is_my_turn()
+        # End Phase button only on your turn
+        self.btn_end_phase.setVisible(my_turn)
+        # Disable during automated Beginning sequence
+        auto_begin = (getattr(self.api.controller, '_hl_phase', '') == "Beginning" and
+                      getattr(self.api.controller, '_begin_seq_running', False))
+        self.btn_end_phase.setEnabled(my_turn and not auto_begin)
+        # Skip Combat button only if it's your turn, in Combat, and waiting for attackers
+        show_skip = my_turn and (ph == "Combat") and waiting
+        self.btn_skip_combat.setVisible(show_skip)
+        self.btn_skip_combat.setEnabled(show_skip)
+
+    # --- Added backward compatibility wrapper (fix AttributeError) ---
+    def _update_skip_combat_btn(self):
+        """Legacy name kept for older calls; now just refreshes combat buttons."""
+        self._refresh_combat_buttons()
+
+    def _end_phase(self):
+        from PySide6.QtWidgets import QMessageBox
+        if QMessageBox.question(self, "End Phase",
+                                "Are you sure you want to end the current phase?",
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.api.advance_phase()
+        # Replace old call with unified refresh
+        self._refresh_combat_buttons()
+
+    def _skip_combat_confirm(self):
+        if QMessageBox.question(self, "Skip Combat",
+                                "Skip the entire combat phase?",
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.api.skip_combat()
+        self._refresh_combat_buttons()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.close(); return
+        self.api.handle_key(e.key())
+        self._refresh_combat_buttons()
+        # ...existing board refresh / banner update if any...
+
+    # Optionally a method UI could call when attackers declared:
+    def attackers_declared(self):  # OPTIONAL helper hook
+        self.api.declare_attackers_committed()
+        self._refresh_combat_buttons()
+        self.btn_skip_combat.setEnabled(show)
+
+    def _end_phase(self):
+        if not self._confirm("End Phase", "Are you sure you want to end the current phase?"):
+            return
         self.api.advance_phase()
         if hasattr(self.play_area, "refresh_board"):
             self.play_area.refresh_board()
         _phase_update(self)
+        self._update_skip_combat_btn()
 
-    def _ai_step(self):  # ADDED
-        self.api.ai_tick()
+    def _skip_combat_confirm(self):
+        if not self._confirm("Skip Combat", "You have attackers available.\nSkip the entire combat phase?"):
+            return
+        self._skip_combat()
+
+    def _skip_combat(self):
+        # Advance through all combat phases directly to Main2
+        combat_tokens = {'BEGINCOMBAT', 'DECLAREATTACKERS', 'DECLAREBLOCKERS', 'COMBATDAMAGE', 'ENDCOMBAT'}
+        safety = 0
+        while safety < 15:
+            safety += 1
+            tok = self._normalize_phase_token()
+            if tok == 'MAIN2':
+                break
+            # If we haven't reached combat yet, step forward until we enter or pass it
+            if tok == 'MAIN1' or tok in combat_tokens:
+                self.api.advance_phase()
+            else:
+                # Not in pre-combat or combat (maybe already past)
+                break
         if hasattr(self.play_area, "refresh_board"):
             self.play_area.refresh_board()
         _phase_update(self)
+        self._update_skip_combat_btn()
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
@@ -58,6 +162,7 @@ class GameWindow(QMainWindow):
         if hasattr(self.play_area, "refresh_board"):
             self.play_area.refresh_board()
         _phase_update(self)
+        self._update_skip_combat_btn()
 
     def closeEvent(self, ev):
         try:
@@ -65,3 +170,14 @@ class GameWindow(QMainWindow):
         except Exception:
             pass
         super().closeEvent(ev)
+        super().closeEvent(ev)
+
+    def _confirm(self, title: str, text: str):  # ADDED
+        from PySide6.QtWidgets import QMessageBox
+        return QMessageBox.question(
+            self,
+            title,
+            text,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        ) == QMessageBox.Yes

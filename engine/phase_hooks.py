@@ -1,265 +1,416 @@
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtWidgets import QLabel, QWidget, QHBoxLayout
+from PySide6.QtCore import QTimer
 
-# --- Canonical Phase Order ---------------------------------------------------
-PHASE_SEQUENCE = [
-    "Untap",
-    "Upkeep",
-    "Draw",
-    "Main1",
-    "BeginCombat",
-    "DeclareAttackers",
-    "DeclareBlockers",
-    "CombatDamage",
-    "EndCombat",
-    "Main2",
+# High-level phases we expose to UI
+HIGH_LEVEL_PHASES = [
+    "Beginning",
+    "PreCombatMain",
+    "Combat",
+    "PostCombatMain",
     "End",
-    "Cleanup",
 ]
 
-_PHASE_ALIASES = {
-    # core
-    "UNTAP": "Untap",
-    "UPKEEP": "Upkeep",
-    "DRAW": "Draw",
-    "PRECOMBAT_MAIN": "Main1",
-    "MAIN": "Main1",
-    "MAIN1": "Main1",
-    "BEGIN_COMBAT": "BeginCombat",
-    "DECLARE_ATTACKERS": "DeclareAttackers",
-    "DECLARE_BLOCKERS": "DeclareBlockers",
-    "COMBAT_DAMAGE": "CombatDamage",
-    "END_COMBAT": "EndCombat",
-    "POSTCOMBAT_MAIN": "Main2",
-    "MAIN2": "Main2",
-    "END_STEP": "End",
-    "END": "End",
-    "CLEANUP": "Cleanup",
+_DISPLAY_NAMES = {
+    "Beginning": "Beginning Phase",
+    "PreCombatMain": "Pre-Combat Main Phase",
+    "Combat": "Combat Phase",
+    "PostCombatMain": "Post Combat Main Phase",
+    "End": "End Phase",
 }
 
-def _normalize_phase(raw) -> str:
-    if raw is None:
-        return "-"
-    s = str(raw).strip()
-    if not s:
-        return "-"
-    key = s.upper().replace(" ", "_")
-    return _PHASE_ALIASES.get(key, s if s in PHASE_SEQUENCE else "-")
+# Internal timing (ms)
+_BEGIN_STEP_DELAYS = [500, 600, 600]        # Untap -> Upkeep -> Draw visualization
+_COMBAT_AUTO_DELAYS = [400, 500, 600]       # Blockers -> Damage -> EndCombat after attackers
 
-def _phase_index(name: str) -> int:
+_PHASE_CTRL_REG = {}
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+_BEGIN_TOKENS = {"UNTAP", "UPKEEP", "DRAW"}
+_MAIN1_TOKENS = {"MAIN1", "PRECOMBAT_MAIN", "MAIN"}
+_COMBAT_TOKENS = {
+    "COMBAT", "BEGIN_COMBAT", "DECLARE_ATTACKERS", "DECLARE_BLOCKERS",
+    "COMBAT_DAMAGE", "END_COMBAT"
+}
+_MAIN2_TOKENS = {"MAIN2", "POSTCOMBAT_MAIN"}
+_END_TOKENS = {"END", "END_STEP", "CLEANUP"}
+
+def _canon(raw):
+    up = (raw or "").upper()
+    if up in _BEGIN_TOKENS:
+        return "Beginning"
+    if up in _MAIN1_TOKENS:
+        return "PreCombatMain"
+    if up in _COMBAT_TOKENS:
+        return "Combat"
+    if up in _MAIN2_TOKENS:
+        return "PostCombatMain"
+    if up in _END_TOKENS:
+        return "End"
+    # Fallback: if engine is already at some phase between cycles treat as Beginning
+    return "Beginning"
+_canon_phase = _canon  # ADDED alias for legacy references
+
+def _active_player(game):
+    ap = getattr(game, "active_player", 0)
     try:
-        return PHASE_SEQUENCE.index(name)
-    except ValueError:
-        return -1
-
-# --- Phase Validation --------------------------------------------------------
-class PhaseOrderValidator:
-    def __init__(self, controller):
-        self.controller = controller
-        self._last_index = None
-
-    def check(self):
-        g = getattr(self.controller, "game", None)
-        if not g:
-            return
-        cur = _normalize_phase(getattr(g, "phase", None))
-        idx = _phase_index(cur)
-        if idx < 0:
-            return
-        if self._last_index is None:
-            self._last_index = idx
-            return
-        # allow wrap (Cleanup -> Untap)
-        if idx == 0 and self._last_index == len(PHASE_SEQUENCE) - 1:
-            self._last_index = idx
-            return
-        # allow staying or advancing one
-        if idx in (self._last_index, self._last_index + 1):
-            self._last_index = idx
-            return
-        if self.controller.logging_enabled:
-            print(f"[PHASE][WARN] Irregular jump {PHASE_SEQUENCE[self._last_index]} -> {cur}")
-        self._last_index = idx
-
-# --- Automatic Turn Start (Untap -> Upkeep -> Draw) --------------------------
-class OpeningTurnSkipper:
-    """
-    Auto turn start helper:
-      Automatically advances from Untap to Upkeep after a 1s delay once the turn begins.
-      DOES NOT auto-advance from Upkeep to Draw (so upkeep triggers & player priority occur).
-    """
-    def __init__(self, controller):
-        self.controller = controller
-        self._pending = False  # waiting to fire Untap->Upkeep
-        self._armed_turn_id = None  # track turn to avoid multiple schedules
-
-    def _schedule(self):
-        QTimer.singleShot(1000, self._fire)
-
-    def _fire(self):
-        # Execute only if still valid
-        g = getattr(self.controller, "game", None)
-        if not g or not self.controller.in_game or not self.controller.first_player_decided:
-            self._pending = False
-            return
-        cur = _normalize_phase(getattr(g, "phase", None))
-        if cur == "Untap":
-            try:
-                self.controller.advance_phase()  # -> Upkeep
-            except Exception:
-                pass
-        # Clear pending regardless (never chain to Draw)
-        self._pending = False
-        self._armed_turn_id = None
-
-    def tick(self):
-        if not (self.controller.in_game and self.controller.first_player_decided):
-            return
-        g = self.controller.game
-        cur = _normalize_phase(getattr(g, "phase", None))
-        # Identify turn by active player + a simple turn counter if present
-        turn_id = (getattr(g, "active_player", None), getattr(g, "turn_number", None))
-        if cur == "Untap":
-            if not self._pending or self._armed_turn_id != turn_id:
-                self._pending = True
-                self._armed_turn_id = turn_id
-                self._schedule()
-        else:
-            # Any other phase cancels pending auto
-            self._pending = False
-            self._armed_turn_id = None
-
-# --- Phase Stall Advancer ----------------------------------------------------
-class PhaseAdvanceManager:
-    """
-    If a phase sits too long with empty stack & all players passed priority (simple heuristic),
-    we can nudge the controller to auto-advance (mainly for AI progression).
-    """
-    def __init__(self, controller, min_interval: float = 0.75, stall_seconds: float = 15.0):
-        self.controller = controller
-        self.min_interval = max(0.25, float(min_interval))
-        self.stall_seconds = stall_seconds
-        self._last_phase = None
-        self._last_change_time = 0.0
-        self._last_tick_time = 0.0
-        self.validator = PhaseOrderValidator(controller)
-
-    def tick(self):
-        import time
-        now = time.time()
-        if now - self._last_tick_time < self.min_interval:
-            return
-        self._last_tick_time = now
-        g = getattr(self.controller, "game", None)
-        if not g:
-            return
-        cur = _normalize_phase(getattr(g, "phase", None))
-        if cur != self._last_phase:
-            self._last_phase = cur
-            self._last_change_time = now
-        else:
-            # same phase too long? attempt soft advance (not during combat subsections unless AI)
-            if (now - self._last_change_time) > self.stall_seconds:
-                if cur not in ("DeclareBlockers", "CombatDamage") and self.controller.in_game:
-                    if self.controller.logging_enabled:
-                        print(f"[PHASE][AUTO] Advancing stalled phase {cur}")
-                    try:
-                        self.controller.advance_phase()
-                        self._last_change_time = now
-                    except Exception:
-                        pass
-        # validate after potential change
-        self.validator.check()
-
-# --- UI Phase Bar ------------------------------------------------------------
-def _ensure_phase_bar(host):
-    """
-    Create phase bar (horizontal labels) once.
-    host expected: MainWindow shell (has play_stack or layout). Labels cached at host._phase_bar_labels.
-    """
-    if hasattr(host, "_phase_bar_labels"):
-        return
-    bar = QWidget()
-    lay = QHBoxLayout(bar)
-    lay.setContentsMargins(4, 2, 4, 2)
-    lay.setSpacing(6)
-    labels = []
-    for name in PHASE_SEQUENCE:
-        lbl = QLabel(name)
-        lbl.setAlignment(Qt.AlignCenter)
-        lbl.setStyleSheet("color:#666;padding:2px 4px;border:1px solid #333;border-radius:3px;font-size:10px;")
-        lay.addWidget(lbl)
-        labels.append(lbl)
-    host._phase_bar_labels = labels
-    host._phase_bar_widget = bar
-    # Try to insert into board wrapper (play_stack index 1)
-    try:
-        if hasattr(host, "play_stack"):
-            board_widget = host.play_stack.widget(1)
-            if board_widget and board_widget.layout():
-                board_widget.layout().insertWidget(1, bar)  # under top control row
+        if hasattr(game, "players") and 0 <= ap < len(game.players):
+            return game.players[ap]
     except Exception:
         pass
+    return None
 
-def _highlight(host, norm):
-    labels = getattr(host, "_phase_bar_labels", [])
-    for lbl in labels:
-        txt = lbl.text()
-        if txt == norm:
-            lbl.setStyleSheet(
-                "color:#fff;background:#2d6b9e;padding:2px 4px;"
-                "border:1px solid #66aadd;border-radius:3px;font-weight:bold;font-size:10px;"
-            )
+# ---------------------------------------------------------------------------
+# Phase log deduper
+# ---------------------------------------------------------------------------
+def install_phase_log_adapter(controller):
+    """
+    Wrap controller.log_phase to emit only high-level phases (Beginning, PreCombatMain,
+    Combat, PostCombatMain, End) once per phase per turn after the match actually starts.
+    Suppresses all pre-game (roll / lobby) UNTAP spam.
+    """
+    if hasattr(controller, "_phase_log_adapter_installed"):
+        return
+    controller._phase_log_adapter_installed = True
+
+    if not hasattr(controller, "_orig_log_phase"):
+        controller._orig_log_phase = getattr(controller, "log_phase", lambda: None)
+
+    state = {
+        "last_key": None,          # (active_player, turn_marker, hl_phase)
+        "last_print": None         # (active_player, hl_phase) legacy fallback
+    }
+
+    BEGIN = {"UNTAP", "UPKEEP", "DRAW"}
+    MAIN1 = {"MAIN1", "PRECOMBAT_MAIN", "MAIN"}
+    MAIN2 = {"MAIN2", "POSTCOMBAT_MAIN"}
+    COMBAT = {
+        "COMBAT", "BEGIN_COMBAT", "DECLARE_ATTACKERS", "DECLARE_BLOCKERS",
+        "COMBAT_DAMAGE", "END_COMBAT"
+    }
+    ENDING = {"END", "END_STEP", "CLEANUP"}
+
+    def _map(raw_token: str) -> str:
+        up = (raw_token or "").upper()
+        if up in BEGIN: return "Beginning"
+        if up in MAIN1: return "PreCombatMain"
+        if up in COMBAT: return "Combat"
+        if up in MAIN2: return "PostCombatMain"
+        if up in ENDING: return "End"
+        return _canon(up)
+
+    def _turn_marker(g):
+        # Prefer an existing turn counter; else synthesize from active player changes
+        tm = getattr(g, "turn_number", None)
+        if tm is not None:
+            return tm
+        # Fallback: (active_player, total_phases_seen_mod) – very coarse, but stable enough
+        return getattr(g, "active_player", 0)
+
+    def _player_name(g, idx):
+        try:
+            if hasattr(g, "players") and 0 <= idx < len(g.players):
+                return getattr(g.players[idx], "name", f"P{idx}")
+        except Exception:
+            pass
+        return f"P{idx}"
+
+    def _adapter():
+        g = getattr(controller, "game", None)
+        if not g:
+            return
+        # NEW: suppress all phase logs until game actually started AND phases unlocked
+        if (not getattr(controller, "in_game", False)
+                or not getattr(controller, "first_player_decided", False)
+                or getattr(controller, "_phases_locked", False)):
+            return
+        raw = getattr(g, "phase", None)
+        hl = _map(raw)
+        ap = getattr(g, "active_player", None)
+        tm = _turn_marker(g)
+        key = (ap, tm, hl)
+
+        # Only log once per (turn_marker, high-level phase, active player)
+        if key == state["last_key"]:
+            return
+        state["last_key"] = key
+
+        if getattr(controller, "logging_enabled", False):
+            try:
+                print(f"[PHASE] Active={_player_name(g, ap)} Phase={hl}")
+            except Exception:
+                pass
+
+    controller.log_phase = _adapter
+
+# Backwards compatibility old name
+install_phase_log_deduper = install_phase_log_adapter
+
+# ---------------------------------------------------------------------------
+# Controller patch (single authoritative high-level progression)
+# ---------------------------------------------------------------------------
+def register_phase_controller(controller):
+    if controller in _PHASE_CTRL_REG:
+        return
+    game = getattr(controller, "game", None)
+    if not game:
+        return
+
+    # Track high-level phase separately (do NOT assign to game.phase which appears read-only)
+    controller._hl_phase = _canon_phase(getattr(game, "phase", None))
+    controller._begin_seq_running = False
+    controller._begin_step_index = 0
+    controller._combat_wait_attackers = False
+    controller._combat_seq_running = False
+    controller._combat_skip_requested = False
+    controller._phases_locked = True        # NEW: prevent auto-Beginning sequence until hands done
+
+    if not hasattr(controller, "_original_advance_phase"):
+        controller._original_advance_phase = controller.advance_phase
+
+    # --- Helpers ------------------------------------------------------------
+    def _underlying_token():
+        return (getattr(game, "phase", None) or "").upper()
+
+    def _refresh_high_level():
+        controller._hl_phase = _canon_phase(_underlying_token())
+
+    def _log_and_ui():
+        if getattr(controller, "logging_enabled", False) and hasattr(controller, "log_phase"):
+            try:
+                controller.log_phase()
+            except Exception:
+                pass
+        host = getattr(controller, "_ui_host", None)
+        if host:
+            try:
+                update_phase_ui(host)
+            except Exception:
+                pass
+
+    # Beginning automation: schedule underlying advances (call original) if engine
+    # stays within UNTAP/UPKEEP/DRAW; once engine reaches MAIN1 we mark PreCombatMain.
+    def _run_beginning_sequence():
+        if controller._begin_seq_running or controller._phases_locked:
+            return
+        controller._begin_seq_running = True
+        controller._begin_step_index = 0
+
+        def _step():
+            # Stop if underlying phase left beginning bucket
+            if _canon_phase(_underlying_token()) != "Beginning":
+                controller._begin_seq_running = False
+                controller._begin_step_index = 0
+                _refresh_high_level()
+                if controller._hl_phase == "Beginning":
+                    # Engine skipped directly to Main1? adjust to PreCombatMain
+                    controller._hl_phase = "PreCombatMain"
+                    _log_and_ui()
+                return
+            if controller._begin_step_index >= 3:
+                controller._begin_seq_running = False
+                controller._begin_step_index = 0
+                # Force high-level shift if still in Beginning mapping
+                if _canon_phase(_underlying_token()) == "Beginning":
+                    controller._hl_phase = "PreCombatMain"
+                    _log_and_ui()
+                return
+            controller._begin_step_index += 1
+            # Advance underlying once (ignore errors)
+            try:
+                controller._original_advance_phase()
+            except Exception:
+                pass
+            # Schedule next internal step
+            delay = _BEGIN_STEP_DELAYS[min(controller._begin_step_index - 1, len(_BEGIN_STEP_DELAYS)-1)]
+            QTimer.singleShot(delay, _step)
+
+        # Kick off sequence
+        QTimer.singleShot(_BEGIN_STEP_DELAYS[0], _step)
+
+    # NEW: public unlock method invoked after opening hands / mulligans resolved
+    def _unlock_phases():
+        if not controller._phases_locked:
+            return
+        controller._phases_locked = False
+        _refresh_high_level()
+        if controller._hl_phase == "Beginning":
+            _run_beginning_sequence()
         else:
-            lbl.setStyleSheet(
-                "color:#666;padding:2px 4px;border:1px solid #333;border-radius:3px;font-size:10px;"
-            )
+            _log_and_ui()
+    controller.unlock_phases = _unlock_phases
 
-# --- Public UI Update --------------------------------------------------------
+    def _has_attackers():
+        pl = _active_player(game)
+        if not pl:
+            return False
+        bf = getattr(pl, "battlefield", []) or []
+        for c in bf:
+            try:
+                if 'Creature' not in getattr(c, 'types', []):
+                    continue
+                if getattr(c, 'tapped', False):
+                    continue
+                sick = getattr(c, 'summoning_sick', getattr(c, 'summoning_sickness', False))
+                if sick and not (getattr(c, 'haste', False) or
+                                 'Haste' in getattr(c, 'keywords', []) or
+                                 'haste' in getattr(c, 'text', '').lower()):
+                    continue
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _maybe_start_combat_wait():
+        # Called after a transition into Combat
+        if controller._combat_skip_requested:
+            return False
+        if not _has_attackers():
+            return False
+        controller._combat_wait_attackers = True
+        return True
+
+    def _start_combat_sequence_after_attackers():
+        if controller._combat_seq_running:
+            return
+        controller._combat_seq_running = True
+        controller._combat_wait_attackers = False
+        steps = ["DeclareBlockers", "CombatDamage", "EndCombat"]
+        idx = 0
+
+        def _cstep():
+            nonlocal idx
+            # abort if engine left combat
+            if _canon_phase(_underlying_token()) != "Combat":
+                controller._combat_seq_running = False
+                _refresh_high_level()
+                return
+            if idx >= len(steps):
+                controller._combat_seq_running = False
+                # Move high-level to PostCombatMain
+                controller._hl_phase = "PostCombatMain"
+                _log_and_ui()
+                return
+            idx += 1
+            try:
+                controller._original_advance_phase()
+            except Exception:
+                pass
+            delay = _COMBAT_AUTO_DELAYS[min(idx-1, len(_COMBAT_AUTO_DELAYS)-1)]
+            QTimer.singleShot(delay, _cstep)
+
+        # First auto step after short delay (gives UI time to show "Attackers" window if needed)
+        QTimer.singleShot(_COMBAT_AUTO_DELAYS[0], _cstep)
+
+    def _fast_forward_to(target_hl: str, limit: int = 30):
+        # Advance underlying until canonical high-level maps to target
+        for _ in range(limit):
+            _refresh_high_level()
+            if controller._hl_phase == target_hl:
+                return
+            try:
+                controller._original_advance_phase()
+            except Exception:
+                break
+        _refresh_high_level()
+
+    # --- Patched advance_phase ----------------------------------------------
+    def _patched_advance_phase():
+        _refresh_high_level()
+
+        # Block any manual advance while phases are locked (before hands finished)
+        if controller._phases_locked:
+            return
+
+        # If player ends Beginning early, ignore until automated sequence finishes
+        if controller._hl_phase == "Beginning" and controller._begin_seq_running:
+            return
+
+        # If player ends Combat while waiting for attackers -> skip combat remainder
+        if controller._hl_phase == "Combat" and controller._combat_wait_attackers:
+            controller._combat_skip_requested = True
+            controller._combat_wait_attackers = False
+            controller._combat_seq_running = False
+            controller._fast_forward_after_skip()
+            return
+
+        # Normal underlying advance
+        try:
+            controller._original_advance_phase()
+        finally:
+            _refresh_high_level()
+            # Transition checks
+            if controller._hl_phase == "Beginning":
+                _run_beginning_sequence()
+            elif controller._hl_phase == "Combat":
+                if controller._combat_skip_requested or not _maybe_start_combat_wait():
+                    # Skip entire combat
+                    controller._combat_skip_requested = False
+                    _fast_forward_to("PostCombatMain")
+                    controller._hl_phase = "PostCombatMain"
+            _log_and_ui()
+
+    controller.advance_phase = _patched_advance_phase
+
+    # Helper for skip call inside patched
+    def _fast_forward_after_skip():
+        _fast_forward_to("PostCombatMain")
+        controller._hl_phase = "PostCombatMain"
+        controller._combat_skip_requested = False
+        _log_and_ui()
+    controller._fast_forward_after_skip = _fast_forward_after_skip
+
+    # Public helper: attackers declared
+    def _mark_attackers_declared():
+        if controller._hl_phase == "Combat" and controller._combat_wait_attackers:
+            controller._combat_wait_attackers = False
+            if controller._combat_skip_requested:
+                _fast_forward_after_skip()
+            else:
+                _start_combat_sequence_after_attackers()
+                _log_and_ui()
+    controller.mark_combat_attackers_declared = _mark_attackers_declared
+
+    # Public helper: request combat skip (UI)
+    def _request_skip():
+        if controller._hl_phase == "Combat" and controller._combat_wait_attackers:
+            controller._combat_skip_requested = True
+            controller._combat_wait_attackers = False
+            _fast_forward_after_skip()
+    controller.request_skip_combat = _request_skip
+
+    # IMPORTANT: do NOT auto start beginning sequence here anymore
+    _log_and_ui()
+    _PHASE_CTRL_REG[controller] = True
+
+# Backwards alias
+install_phase_control = register_phase_controller
+
+# ---------------------------------------------------------------------------
+# UI banner update
+# ---------------------------------------------------------------------------
 def update_phase_ui(host):
     """
-    Called by MainWindow each timer tick.
-    Shows bar even if starter not chosen (no highlight if no phase yet).
+    Update a banner (play_area.update_phase_banner(display_phase, active_player_name))
+    if play_area implements it. Silent on failure.
     """
     try:
-        _ensure_phase_bar(host)
         game = getattr(host, "game", None)
         if not game:
             return
-        raw = getattr(game, "phase", None)
-        norm = _normalize_phase(raw)
-        if norm in PHASE_SEQUENCE:
-            _highlight(host, norm)
-        else:
-            # no known phase yet -> dim all (already default)
-            pass
-    except Exception as ex:
-        ctrl = getattr(host, "controller", None)
-        if ctrl and getattr(ctrl, "logging_enabled", False):
-            print(f"[PHASE][ERR] UI update failed: {ex}")
-
-def install_phase_log_deduper(controller):
-    """
-    Wrap controller.log_phase to suppress duplicate consecutive logs
-    of identical (active_player, phase). Safe to call multiple times.
-    """
-    if hasattr(controller, '_phase_dedupe_installed'):
-        return
-    controller._phase_dedupe_installed = True
-    orig = getattr(controller, 'log_phase', None)
-    if orig is None:
-        return
-    state = {'last': None}
-
-    def _wrapped():
-        g = getattr(controller, 'game', None)
-        if not g:
-            return orig()
-        cur_phase = _normalize_phase(getattr(g, 'phase', None))
-        ap = getattr(g, 'active_player', None)
-        key = (ap, cur_phase)
-        if state['last'] == key:
-            return  # skip duplicate
-        state['last'] = key
-        orig()
-    controller.log_phase = _wrapped
+        raw = getattr(game, "phase", "Beginning")
+        hl = _canon_phase(raw)
+        disp = _DISPLAY_NAMES.get(hl, hl)
+        ap_i = getattr(game, "active_player", 0)
+        ap_name = "Player"
+        if hasattr(game, "players") and 0 <= ap_i < len(game.players):
+            ap_name = getattr(game.players[ap_i], "name", ap_name)
+        pa = getattr(host, "play_area", None)
+        if pa is None and hasattr(host, "api"):
+            gw = getattr(host.api, "_game_window", None)
+            if gw:
+                pa = getattr(gw, "play_area", None)
+        if pa and hasattr(pa, "update_phase_banner"):
+            pa.update_phase_banner(disp, ap_name)
+    except Exception:
+        pass

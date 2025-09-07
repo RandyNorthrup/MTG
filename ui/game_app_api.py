@@ -1,5 +1,5 @@
 import random
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QMessageBox
 
 from engine.game_controller import GameController
@@ -7,6 +7,7 @@ from engine.game_state import GameState
 from engine.rules_engine import init_rules
 from image_cache import ensure_card_image
 from engine.game_ids import generate_game_id, register_game_id
+from engine.phase_hooks import register_phase_controller
 
 class GameAppAPI:
     """
@@ -17,13 +18,18 @@ class GameAppAPI:
         self.w = main_window
         self.args = args
         self._new_game_factory = new_game_factory
-        self.controller = GameController(game, ai_ids, logging_enabled=not (args and args.no_log))
+        desired_logging = not (args and args.no_log)
+        self.controller = GameController(game, ai_ids, logging_enabled=False)  # CHANGED: start muted
+        self._desired_logging_flag = desired_logging                           # NEW
+        register_phase_controller(self.controller)  # ensure centralized phase logic
         self.game = self.controller.game
         self.game_id = generate_game_id()
         register_game_id(self.game_id)
         self.game.game_id = self.game_id
         self._opening_sequence_done = False
-        self.pending_match_active = False
+        from engine.phase_hooks import install_phase_log_deduper  # ensure deduper before any phase logs
+        install_phase_log_deduper(self.controller)
+        self.pending_match_active = False  # ensure defined early
         self._debug_win = None
         self._game_window = None  # gameplay window (created later)
 
@@ -41,10 +47,10 @@ class GameAppAPI:
     def create_pending_match(self):
         if self.pending_match_active:
             return
-        player_deck = getattr(self.game.players[0], 'source_path', None) or self.w.current_deck_path
+        self.pending_match_active = True                     # MOVED: set flag before rebuild
+        player_deck = getattr(self.game.players[0], 'source_path', None) or getattr(self.w, 'current_deck_path', None)
         specs = [(self.game.players[0].name, player_deck, False)]
         self._rebuild_game_with_specs(specs)
-        self.pending_match_active = True
         self._sync_lobby(True)
         self._log("[QUEUE] Pending match created. Awaiting players (max 4).")
 
@@ -88,8 +94,17 @@ class GameAppAPI:
     def start_pending_match(self):
         if not self.pending_match_active:
             return
+        # Require at least 2 players; auto-add one AI if only 1 and decks available
+        if len(self.game.players) == 1:
+            self.ensure_ai_opponent()
+        if len(self.game.players) == 1:
+            QMessageBox.information(self.w, "Need Another Player",
+                                    "You must add at least one more player (AI or human) before starting.")
+            return
         self.pending_match_active = False
+        # Proceed with normal start (roll if multi-player)
         if len(self.game.players) > 1:
+            from PySide6.QtCore import QTimer
             QTimer.singleShot(50, self.prompt_first_player_roll)
         else:
             self.start_game_without_roll()
@@ -114,7 +129,7 @@ class GameAppAPI:
             self.controller.enter_match()
         self.controller.set_starter(starter_index)
         self._handle_opening_hands_and_mulligans()
-        self.controller.log_phase()
+        # REMOVED early self.controller.log_phase()
         self.open_game_window()               # CHANGED
         self._phase_ui()
 
@@ -128,7 +143,7 @@ class GameAppAPI:
             self.controller.enter_match()
         self.controller.set_starter(0)
         self._handle_opening_hands_and_mulligans()
-        self.controller.log_phase()
+        # REMOVED early self.controller.log_phase()
         self.open_game_window()               # CHANGED
         self._phase_ui()
 
@@ -157,10 +172,20 @@ class GameAppAPI:
     def advance_phase(self):  # CHANGED: ensure single AI tick & UI update without timers
         if not (self.controller.in_game and self.controller.first_player_decided):
             return
+        # controller.advance_phase is patched by phase_hooks
         self.controller.advance_phase()
-        # Optional: one immediate AI consideration after each phase advance
         self.controller.tick(lambda: None)
         self._phase_ui()
+
+    def skip_combat(self):  # NEW
+        if hasattr(self.controller, "request_skip_combat"):
+            self.controller.request_skip_combat()
+            self._phase_ui()
+
+    def declare_attackers_committed(self):  # NEW (UI can call when attackers chosen)
+        if hasattr(self.controller, "mark_combat_attackers_declared"):
+            self.controller.mark_combat_attackers_declared()
+            self._phase_ui()
 
     def ai_tick(self):  # CHANGED: remove dependency on window timer
         if not (self.controller.in_game and self.controller.first_player_decided):
@@ -206,7 +231,33 @@ class GameAppAPI:
         else:
             pa = self._current_play_area()
             self._debug_win = GameDebugWindow(self.game, pa, self.w if pa is None else self._game_window)
+            # NEW: always-on-top
+            self._debug_win.setWindowFlag(Qt.WindowStaysOnTopHint, True)
             self._debug_win.show()
+            self._debug_win.raise_()
+            self._debug_win.activateWindow()
+
+    def shutdown(self):
+        """
+        Close any auxiliary windows / stop background activity.
+        Called by MainWindow.closeEvent.
+        """
+        # close debug UI
+        try:
+            if self._debug_win:
+                self._debug_win.close()
+        except Exception:
+            pass
+        self._debug_win = None
+        # close game window
+        try:
+            if self._game_window:
+                self._game_window.close()
+        except Exception:
+            pass
+        self._game_window = None
+        # future: stop controller threads/loops if any
+        # (controller currently ticked manually, so no action)
 
     # --- Key handling (can be called by MainWindow or Play tab) ---
     def handle_key(self, key):
@@ -230,29 +281,31 @@ class GameAppAPI:
     # --- Internal helpers ---
     def _rebuild_game_with_specs(self, specs):
         game, ai_ids = self._new_game_factory(specs, ai_enabled=True)
-        logging_flag = self.controller.logging_enabled
-        from engine.game_ids import generate_game_id, register_game_id
-        self.game_id = generate_game_id()
-        register_game_id(self.game_id)
-        self.controller = GameController(game, ai_ids, logging_enabled=logging_flag)
+        # FIX: ensure we capture prior desired logging flag before recreating controller
+        desired_logging = getattr(self, "_desired_logging_flag", True)
+        # preserve previous controller logging_enabled just in case (not used until unlock)
+        prev_logging_runtime = getattr(self.controller, "logging_enabled", False)
+        self.controller = GameController(game, ai_ids, logging_enabled=False)  # start muted
+        self._desired_logging_flag = desired_logging
+        register_phase_controller(self.controller)
+        from engine.phase_hooks import install_phase_log_deduper as install_phase_log_adapter
+        install_phase_log_adapter(self.controller)
         self.game = self.controller.game
         self.game.game_id = self.game_id
-        # Close any existing game window (new session)
         if self._game_window:
             try:
                 self._game_window.close()
             except Exception:
                 pass
             self._game_window = None
-        # UPDATE: only touch play area if a game window is already open (not MainWindow)
         pa = self._current_play_area()
         if pa and hasattr(pa, "set_game"):
             pa.set_game(self.game)
-        self.w.logging_enabled = self.controller.logging_enabled
         if hasattr(self.w, 'decks_manager'):
             self.w.decks_manager.refresh()
         self._phase_ui()
-        if len(game.players) == 1:
+        # Skip auto-adding AI while in lobby pending mode
+        if len(game.players) == 1 and not self.pending_match_active:
             self.ensure_ai_opponent()
 
     def _handle_opening_hands_and_mulligans(self):
@@ -302,6 +355,12 @@ class GameAppAPI:
                     human.library.extend(moving)
         self._opening_sequence_done = True
         setattr(self.game, '_opening_hands_deferred', False)
+        # NEW: unlock phases & enable logging now (first visible phase log happens here)
+        if hasattr(self.controller, 'unlock_phases'):
+            self.controller.unlock_phases()
+        self.controller.logging_enabled = self._desired_logging_flag
+        if self.controller.logging_enabled and hasattr(self.controller, 'log_phase'):
+            self.controller.log_phase()
 
     def _phase_ui(self):
         if hasattr(self.w, '_update_phase_ui'):
@@ -324,12 +383,16 @@ class GameAppAPI:
 
     # --- Game window management (NEW) ---
     def open_game_window(self):
-        """Spawn gameplay window if not already open."""
         if self._game_window:
+            self._game_window.raise_(); self._game_window.activateWindow()
             return
         from ui.game_window import GameWindow
+        # Create as independent top-level (no parent) so both windows stay interactive
         self._game_window = GameWindow(self, self.game_id)
+        # (No setParent / modality; just position & focus handled inside GameWindow)
         self._game_window.show()
+        self._game_window.raise_()
+        self._game_window.activateWindow()
 
     def attach_game_window(self, gw):
         self._game_window = gw
@@ -344,4 +407,7 @@ class GameAppAPI:
         return None
 
     # Legacy compatibility (home tab / older code may still call):
+    _open_settings_tab = open_settings
+    # Legacy compatibility (home tab / older code may still call):
+    _open_settings_tab = open_settings
     _open_settings_tab = open_settings
