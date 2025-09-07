@@ -1,4 +1,4 @@
-# Python
+# Python bytecode and environments
 __pycache__/
 *.py[cod]
 *.pyo
@@ -27,7 +27,6 @@ data/cards/*.zip
 
 # Cache (runtime)
 cache/
-# Card image cache (runtime downloads)
 data/img_cache/
 
 # Type / test cache
@@ -45,28 +44,15 @@ dist/
 *.spec
 
 # Virtual environments
-.venv/
 venv/
 env/
 
-# Editor / tooling
-.vscode/
-.idea/
-
 # App runtime artifacts
-data/game_ids.txt
 data/cache/
-cache/
 logs/
-*.log
 
 # Image cache (if generated)
 image_cache/
 
 # Documentation
 docs/
-
-# Runtime caches & generated IDs
-data/game_ids.txt
-data/cache/
-image_cache/

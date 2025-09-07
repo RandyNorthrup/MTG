@@ -3,7 +3,14 @@ import shutil
 import threading
 import time
 import urllib.request
+import tempfile
 from typing import Dict, Tuple, Optional
+
+_lock = threading.RLock()
+_meta: Dict[str, Tuple[str, float]] = {}   # card_id -> (path, last_access_epoch)
+_qt_timer = None
+
+SESSION_DIR = os.path.join(tempfile.gettempdir(), "mtg_img_session")
 
 # -------- Tunables (env overridable) --------
 MAX_CACHE_IMAGES = int(os.environ.get("MTG_IMG_CACHE_MAX", "400"))
@@ -14,14 +21,9 @@ REQ_TIMEOUT      = int(os.environ.get("MTG_IMG_HTTP_TIMEOUT", "12"))
 
 # -------- Directories --------
 LEGACY_DIR  = os.path.join("data", "img_cache")             # persistent store
-SESSION_DIR = os.path.join(tempfile.gettempdir(), "mtg_img_session")
+
 os.makedirs(LEGACY_DIR, exist_ok=True)
 os.makedirs(SESSION_DIR, exist_ok=True)
-
-# -------- Internal state --------
-_lock = threading.RLock()
-_meta: Dict[str, Tuple[str, float]] = {}   # card_id -> (path, last_access_epoch)
-_qt_timer = None
 
 # -------- Helpers --------
 def _now() -> float:
@@ -36,14 +38,13 @@ def _safe_remove(path: str):
 
 def _is_valid_image(path: str) -> bool:
     """
-    Basic sanity: exists, minimum size, optional QPixmap load (only if a QApplication exists).
+    Check if image exists, is large enough, and can be loaded by QPixmap if possible.
     """
     try:
         if not os.path.isfile(path):
             return False
         if os.path.getsize(path) < 512:
             return False
-        # Safe QPixmap check only after QApplication is created
         try:
             from PySide6.QtWidgets import QApplication  # type: ignore
             if QApplication.instance() is not None:
@@ -98,9 +99,6 @@ def _download_scryfall(card_id: str, dest: str) -> bool:
 def ensure_card_image(card_id: str) -> Optional[str]:
     """
     Return path to a valid image (downloaded once). None if unavailable.
-    Order:
-      1. Persistent legacy cache
-      2. Download -> legacy
     """
     if not card_id:
         return None
@@ -124,7 +122,7 @@ def ensure_card_image(card_id: str) -> Optional[str]:
 
 def cleanup_cache(force: bool = False):
     """
-    Evict stale metadata. force=True also purges session dir (not used for storage now).
+    Evict stale metadata. If force=True, also clear session dir.
     """
     with _lock:
         if force:
@@ -136,7 +134,7 @@ def cleanup_cache(force: bool = False):
 
 def repair_cache():
     """
-    Remove corrupt / undersized images. No fabrication.
+    Remove corrupt or undersized images.
     """
     removed = 0
     for root in (LEGACY_DIR, SESSION_DIR):
@@ -154,7 +152,7 @@ def repair_cache():
 
 def init_image_cache(qt_parent=None, interval_sec: int = CLEAN_INTERVAL):
     """
-    Optional Qt periodic metadata cleanup.
+    Optionally start a Qt timer for periodic cache cleanup.
     """
     global _qt_timer
     if _qt_timer:
@@ -171,9 +169,13 @@ def init_image_cache(qt_parent=None, interval_sec: int = CLEAN_INTERVAL):
 
 def teardown_cache():
     """
-    Clear ephemeral metadata + session folder (leave persistent images).
+    Clear ephemeral metadata and session folder (persistent images remain).
     """
     try:
+        cleanup_cache(force=True)
+        shutil.rmtree(SESSION_DIR, ignore_errors=True)
+    except Exception:
+        pass
         cleanup_cache(force=True)
         shutil.rmtree(SESSION_DIR, ignore_errors=True)
     except Exception:

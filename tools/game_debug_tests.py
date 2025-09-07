@@ -1,17 +1,20 @@
-from PySide6.QtWidgets import QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QMessageBox, QLineEdit, QTabWidget, QPlainTextEdit
+from PySide6.QtWidgets import (
+    QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPlainTextEdit,
+    QTabWidget, QToolBar, QComboBox, QLineEdit, QMessageBox
+)
 from PySide6.QtCore import Qt, QTimer, QEvent
 
 class GameDebugWindow(QWidget):
     """
-    Lightweight in-process debug utility.
-    Now reports both Main window size and (detached) Board window size.
+    Enhanced debug utility for in-process game debugging.
+    Shows main/board window sizes, game state, stack, and provides command buttons and dropdowns.
     """
     def __init__(self, game, play_area, main_window, board_window=None):
         super().__init__()
         self.setWindowTitle("Game Debug")
         self.game = game
         self.play_area = play_area
-        self.main_window = main_window          # ensure real main window
+        self.main_window = main_window
         self.board_window = board_window
         self._last_board_size = None
         self.controller = getattr(main_window, 'controller', getattr(main_window, 'api', None) and getattr(main_window.api, 'controller', None))
@@ -26,12 +29,72 @@ class GameDebugWindow(QWidget):
         root.setContentsMargins(8,8,8,8)
         root.setSpacing(6)
 
+        # --- Toolbar with command buttons and dropdowns ---
+        toolbar = QToolBar("Debug")
+        # Phase/step controls
+        from engine.phase_hooks import advance_phase, advance_step, set_phase
+        btn_next_phase = QPushButton("Next Phase")
+        btn_next_phase.clicked.connect(lambda: advance_phase(self.controller))
+        toolbar.addWidget(btn_next_phase)
+
+        btn_next_step = QPushButton("Next Step")
+        btn_next_step.clicked.connect(lambda: advance_step(self.controller))
+        toolbar.addWidget(btn_next_step)
+
+        btn_new_turn = QPushButton("New Turn")
+        btn_new_turn.clicked.connect(self._start_new_turn)
+        toolbar.addWidget(btn_new_turn)
+
+        btn_clear_stack = QPushButton("Clear Stack")
+        btn_clear_stack.clicked.connect(lambda: self.controller.clear_stack())
+        toolbar.addWidget(btn_clear_stack)
+
+        btn_log_phase = QPushButton("Log Phase")
+        btn_log_phase.clicked.connect(lambda: self.controller.log_phase())
+        toolbar.addWidget(btn_log_phase)
+
+        # Mana pool controls
+        mana_colors = ['W', 'U', 'B', 'R', 'G', 'C']
+        for color in mana_colors:
+            btn = QPushButton(f"+{color}")
+            btn.clicked.connect(lambda _, c=color: self._add_color_mana(c))
+            toolbar.addWidget(btn)
+
+        # Dropdown: select player
+        self.player_dropdown = QComboBox()
+        self._refresh_player_dropdown()
+        toolbar.addWidget(QLabel("Player:"))
+        toolbar.addWidget(self.player_dropdown)
+
+        # Dropdown: select phase
+        self.phase_dropdown = QComboBox()
+        self.phase_dropdown.addItems([
+            "untap", "upkeep", "draw", "precombat_main", "begin_combat", "declare_attackers",
+            "declare_blockers", "combat_damage", "end_combat", "postcombat_main", "end", "cleanup"
+        ])
+        toolbar.addWidget(QLabel("Set Phase:"))
+        toolbar.addWidget(self.phase_dropdown)
+        btn_set_phase = QPushButton("Set")
+        btn_set_phase.clicked.connect(lambda: set_phase(self.controller, self.phase_dropdown.currentText()))
+        toolbar.addWidget(btn_set_phase)
+
+        # Command: set life
+        toolbar.addWidget(QLabel("Set Life:"))
+        self.life_input = QLineEdit()
+        self.life_input.setFixedWidth(40)
+        toolbar.addWidget(self.life_input)
+        btn_set_life = QPushButton("Set")
+        btn_set_life.clicked.connect(self._set_life)
+        toolbar.addWidget(btn_set_life)
+
+        root.addWidget(toolbar)
+
+        # --- Info labels ---
         self.info_lbl = QLabel(self._build_info_text())
         self.info_lbl.setStyleSheet("font:10pt monospace;")
         self.info_lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
         root.addWidget(self.info_lbl)
 
-        # Added: window size labels
         self.main_size_lbl = QLabel(self._main_size_text())
         self.main_size_lbl.setStyleSheet("font:9pt monospace;color:#5a5;")
         root.addWidget(self.main_size_lbl)
@@ -40,39 +103,8 @@ class GameDebugWindow(QWidget):
         self.board_size_lbl.setStyleSheet("font:9pt monospace;color:#66c;")
         root.addWidget(self.board_size_lbl)
 
-        # Row 1 – flow
-        row1 = QHBoxLayout()
-        row1.addWidget(self._mk_btn("Advance Phase", self._advance_phase))
-        row1.addWidget(self._mk_btn("AI Step", self._ai_step))
-        row1.addWidget(self._mk_btn("Resolve Stack", self._resolve_stack))
-        row1.addWidget(self._mk_btn("Force Log Phase", self._log_phase))
-        root.addLayout(row1)
-
-        # Row 2 – player actions
-        row2 = QHBoxLayout()
-        row2.addWidget(self._mk_btn("+5 Life (AP)", self._add_life))
-        row2.addWidget(self._mk_btn("Draw Card (AP)", self._draw_card))
-        row2.addWidget(self._mk_btn("Add Debug Mana", self._add_mana))
-        row2.addWidget(self._mk_btn("Refresh Board", self._refresh_board))
-        root.addLayout(row2)
-
-        # Row 3 – misc
-        row3 = QHBoxLayout()
-        row3.addWidget(self._mk_btn("Dump State", self._dump_state))
-        row3.addWidget(self._mk_btn("Close", self.close))
-        row3.addStretch(1)
-        root.addLayout(row3)
-
-        self.log_box = QTextEdit()
-        self.log_box.setReadOnly(True)
-        self.log_box.setFixedHeight(140)
-        self.log_box.setStyleSheet("font:10pt Consolas,monospace;")
-        root.addWidget(self.log_box)
-
-        # --- NEW: tabs for Log / Verbose ---
+        # --- Log/Verbose Tabs ---
         self._tabs = QTabWidget()
-        # Preserve existing log box: assume self.log_box already created above; if not, adapt below.
-        # If log_box not yet created at this point in original file, move this block after its creation.
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setFixedHeight(140)
@@ -84,14 +116,13 @@ class GameDebugWindow(QWidget):
         self._tabs.addTab(self.verbose_box, "Verbose")
         root.addWidget(self._tabs, 1)
 
-        # Control row for verbose refresh
+        # Verbose refresh
         verb_row = QHBoxLayout()
         self.btn_refresh_verbose = QPushButton("Refresh Verbose")
         self.btn_refresh_verbose.clicked.connect(self._refresh_verbose)
         verb_row.addWidget(self.btn_refresh_verbose)
         verb_row.addStretch(1)
         root.addLayout(verb_row)
-        # Initial fill
         self._refresh_verbose()
 
         # Periodic info refresh
@@ -99,10 +130,69 @@ class GameDebugWindow(QWidget):
         self._refresh_timer.timeout.connect(self._periodic_refresh)
         self._refresh_timer.start(1200)
 
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)  # ADDED keep on top
-        self._update_size_labels()  # ADDED initial size fill
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self._update_size_labels()
 
-    # --- Size text helpers (ADDED) ---
+    # --- Toolbar helpers ---
+    def _refresh_player_dropdown(self):
+        self.player_dropdown.clear()
+        for p in getattr(self.game, 'players', []):
+            self.player_dropdown.addItem(f"P{p.player_id}: {p.name}", p.player_id)
+
+    def _set_phase(self, set_phase_func=None):
+        phase = self.phase_dropdown.currentText()
+        try:
+            if set_phase_func is None:
+                from engine import phase_hooks
+                set_phase_func = getattr(phase_hooks, "set_phase", None)
+            if set_phase_func:
+                set_phase_func(self.controller, phase)
+                self._append_log(f"[phase] set to {phase}")
+            else:
+                self.game.phase = phase
+                self._append_log(f"[phase] set to {phase} (direct)")
+        except Exception as ex:
+            self._append_log(f"[phase][err] {ex}")
+        self._safe_refresh()
+
+    def _set_life(self):
+        try:
+            idx = self.player_dropdown.currentIndex()
+            pid = self.player_dropdown.itemData(idx)
+            val = int(self.life_input.text())
+            pl = next(p for p in self.game.players if p.player_id == pid)
+            pl.life = val
+            self._append_log(f"[life] set P{pid} to {val}")
+        except Exception as ex:
+            self._append_log(f"[life][err] {ex}")
+        self._safe_refresh()
+
+    def _add_color_mana(self, color):
+        try:
+            idx = self.player_dropdown.currentIndex()
+            pid = self.player_dropdown.itemData(idx)
+            pl = next(p for p in self.game.players if p.player_id == pid)
+            pool = getattr(pl, 'mana_pool', None)
+            if pool is None:
+                pool = {}
+                setattr(pl, 'mana_pool', pool)
+            pool[color] = pool.get(color, 0) + 1
+            self._append_log(f"[mana] +1{color} -> {pool}")
+        except Exception as ex:
+            self._append_log(f"[mana][err] {ex}")
+
+    def _start_new_turn(self):
+        try:
+            if hasattr(self.controller, "start_new_turn"):
+                self.controller.start_new_turn()
+                self._append_log("[turn] started new turn")
+            else:
+                self._append_log("[turn][err] Controller missing start_new_turn")
+        except Exception as ex:
+            self._append_log(f"[turn][err] {ex}")
+        self._safe_refresh()
+
+    # --- Size text helpers ---
     def _main_size_text(self):
         if not self.main_window:
             return "Main Window: (unavailable)"
@@ -125,17 +215,16 @@ class GameDebugWindow(QWidget):
         if self.board_size_lbl:
             self.board_size_lbl.setText(self._board_size_text())
 
-    # --- Event filter to catch resize / close (ADDED) ---
     def eventFilter(self, obj, ev):
         if ev.type() in (QEvent.Resize, QEvent.Close):
             if obj is self.main_window or obj is self.board_window:
                 self._update_size_labels()
         return super().eventFilter(obj, ev)
 
-    # --- Periodic combined refresh (ADDED) ---
     def _periodic_refresh(self):
         self.info_lbl.setText(self._build_info_text())
         self._update_size_labels()
+        self._refresh_player_dropdown()
 
     # --- UI helpers ---
     def _mk_btn(self, text, slot):
@@ -147,7 +236,6 @@ class GameDebugWindow(QWidget):
         self.log_box.append(msg)
 
     def _update_info(self):
-        # retained for any direct calls (kept backward compat)
         self.info_lbl.setText(self._build_info_text())
         self._update_size_labels()
 
@@ -163,8 +251,13 @@ class GameDebugWindow(QWidget):
                 players_lines.append(f"P{p.player_id} {p.name} L:{p.life} H:{hand} Lib:{lib} BF:{bf}")
             players_str = "\n".join(players_lines) if players_lines else "No players"
             stack_size = 0
-            if hasattr(self.game, 'stack') and hasattr(self.game.stack, 'items'):
-                stack_size = len(self.game.stack.items)
+            stack = getattr(self.game, 'stack', None)
+            if isinstance(stack, list):
+                stack_size = len(stack)
+            elif hasattr(stack, 'items'):
+                stack_size = len(stack.items)
+            elif stack and hasattr(stack, '__len__'):
+                stack_size = len(stack)
             return (f"Active: P{ap}  Phase: {phase}  Stack:{stack_size}\n"
                     f"{players_str}")
         except Exception as ex:
@@ -178,37 +271,11 @@ class GameDebugWindow(QWidget):
                 pass
         self._update_info()
 
-    # --- NEW ---
-    def _update_window_sizes(self):
-        try:
-            mw = self.main_window
-            gw = getattr(getattr(mw, 'api', None), '_game_window', None)
-            if mw:
-                self.main_size_box.setText(f"{mw.width()}x{mw.height()}")
-            if gw:
-                self.game_size_box.setText(f"{gw.width()}x{gw.height()}")
-            else:
-                self.game_size_box.setText("(closed)")
-        except Exception:
-            pass
+    def _refresh_verbose(self, auto=False):
+        if auto and self._tabs.currentWidget() is not self.verbose_box:
+            return
+        self.verbose_box.setPlainText(self._build_verbose_dump())
 
-    # --- ADDED helpers for board window size ---
-    def _board_size_text(self):
-        if not self.board_window:
-            return "Board Size: (no board window)"
-        sz = self.board_window.size()
-        return f"Board Size: {sz.width()} x {sz.height()}"
-
-    def _update_board_size_label(self):
-        if self.board_size_lbl:
-            self.board_size_lbl.setText(self._board_size_text())
-
-    def eventFilter(self, obj, ev):  # ADDED: react to board window resize
-        if obj is self.board_window and ev.type() == QEvent.Resize:
-            self._update_board_size_label()
-        return super().eventFilter(obj, ev)
-
-    # --- NEW safe helpers (placed near other helpers / before _build_verbose_dump) ---
     def _safe_len(self, obj):
         try:
             if callable(obj):
@@ -230,7 +297,6 @@ class GameDebugWindow(QWidget):
         except Exception:
             return []
 
-    # --- NEW: Verbose dump helpers ---
     def _build_verbose_dump(self):
         g = self.game
         if not g:
@@ -245,11 +311,14 @@ class GameDebugWindow(QWidget):
             stack_items = []
             try:
                 if stack_obj:
-                    cand = getattr(stack_obj, 'items', stack_obj)
-                    if callable(cand):
-                        cand = cand()
-                    if hasattr(cand, '__iter__'):
-                        stack_items = list(cand)
+                    if isinstance(stack_obj, list):
+                        stack_items = stack_obj
+                    else:
+                        cand = getattr(stack_obj, 'items', stack_obj)
+                        if callable(cand):
+                            cand = cand()
+                        if hasattr(cand, '__iter__'):
+                            stack_items = list(cand)
             except Exception:
                 stack_items = []
             lines.append(f"Stack ({len(stack_items)}):")
@@ -270,14 +339,12 @@ class GameDebugWindow(QWidget):
                     f"  [{getattr(p,'player_id','?')}] {p.name}  Life={getattr(p,'life','?')} "
                     f"Hand={hand_n} Lib={lib_n} GY={gy_n} BF={bf_n}"
                 )
-                # Commander
                 try:
                     cmdr = getattr(p, 'commander', None)
                     if cmdr:
                         lines.append(f"     Commander: {getattr(cmdr,'name','(unnamed)')}")
                 except Exception:
                     pass
-                # Battlefield detail (limit)
                 for perm in self._iter_cards(bf, limit=12):
                     try:
                         status = []
@@ -289,7 +356,6 @@ class GameDebugWindow(QWidget):
                         lines.append(f"       - {perm.name}{pt}{' ('+', '.join(status)+')' if status else ''}")
                     except Exception:
                         continue
-            # Potential attackers (active player)
             ap = getattr(g, 'active_player', None)
             attackers = []
             if ap is not None and ap < self._safe_len(getattr(g, 'players', [])):
@@ -314,16 +380,18 @@ class GameDebugWindow(QWidget):
             lines.append(f"[ERROR building verbose dump (handled)]: {ex}")
         return "\n".join(lines)
 
-    def _refresh_verbose(self, auto=False):
-        # If user switched away and auto refresh, skip heavy repaint
-        if auto and self._tabs.currentWidget() is not self.verbose_box:
-            return
-        self.verbose_box.setPlainText(self._build_verbose_dump())
-
     # --- Button actions ---
     def _advance_phase(self):
         try:
-            if self.controller:
+            # Try to use phase_hooks if available, else fallback to controller
+            try:
+                from engine import phase_hooks
+                advance_phase = getattr(phase_hooks, "advance_phase", None)
+            except ImportError:
+                advance_phase = None
+            if advance_phase:
+                advance_phase(self.controller)
+            elif self.controller and hasattr(self.controller, "advance_phase"):
                 self.controller.advance_phase()
             elif hasattr(self.game, 'next_phase'):
                 self.game.next_phase()
@@ -406,6 +474,24 @@ class GameDebugWindow(QWidget):
 
     def _dump_state(self):
         try:
+            ap = self.game.active_player
+            lines = [f"[dump] phase={getattr(self.game,'phase','?')} active={ap}"]
+            for p in self.game.players:
+                lines.append(f"P{p.player_id}:{p.name} life={p.life} hand={len(getattr(p,'hand',[]))} lib={len(getattr(p,'library',[]))}")
+            if hasattr(self.game, 'stack') and getattr(self.game.stack,'items',None):
+                lines.append(f"Stack size={len(self.game.stack.items)}")
+            self._append_log("\n".join(lines))
+        except Exception as ex:
+            self._append_log(f"[dump][err] {ex}")
+            ap = self.game.active_player
+            lines = [f"[dump] phase={getattr(self.game,'phase','?')} active={ap}"]
+            for p in self.game.players:
+                lines.append(f"P{p.player_id}:{p.name} life={p.life} hand={len(getattr(p,'hand',[]))} lib={len(getattr(p,'library',[]))}")
+            if hasattr(self.game, 'stack') and getattr(self.game.stack,'items',None):
+                lines.append(f"Stack size={len(self.game.stack.items)}")
+            self._append_log("\n".join(lines))
+        except Exception as ex:
+            self._append_log(f"[dump][err] {ex}")
             ap = self.game.active_player
             lines = [f"[dump] phase={getattr(self.game,'phase','?')} active={ap}"]
             for p in self.game.players:

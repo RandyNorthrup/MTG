@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox
 from PySide6.QtCore import Qt, QTimer
 from ui.ui_manager import PlayArea
 
@@ -19,15 +19,12 @@ class GameWindow(QMainWindow):
         bar = QHBoxLayout()
         self.phase_lbl = QLabel("Phase: —")
         self.phase_lbl.setStyleSheet("font-weight:bold;")
-        btn_adv = QPushButton("Advance (Space)")
-        btn_adv.clicked.connect(api.advance_phase)
         btn_dbg = QPushButton("Debug")
         btn_dbg.clicked.connect(api.toggle_debug_window)
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.close)
         bar.addWidget(self.phase_lbl)
         bar.addStretch(1)
-        bar.addWidget(btn_adv)
         bar.addWidget(btn_dbg)
         bar.addWidget(btn_close)
         v.addLayout(bar)

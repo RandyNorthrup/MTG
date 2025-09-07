@@ -35,19 +35,24 @@ def build_home_tab(ctx):
         "QPushButton:pressed {background:rgba(80,80,80,160);}"
     )
 
-    def _open_settings():
-        if hasattr(ctx, 'open_settings'):
+    def _open_settings(ctx):
+        if hasattr(ctx, "open_settings") and callable(ctx.open_settings):
             ctx.open_settings()
-        elif hasattr(ctx, '_open_settings_tab'):
-            ctx._open_settings_tab()
-        elif hasattr(ctx, 'w') and hasattr(ctx.w, '_open_settings_tab'):
-            ctx.w._open_settings_tab()
+        else:
+            print("Error: open_settings called with invalid context:", type(ctx))
 
     btn.clicked.connect(_open_settings)
     wrap = QHBoxLayout()
     wrap.addStretch(1); wrap.addWidget(btn, alignment=Qt.AlignCenter); wrap.addStretch(1)
     v.addLayout(wrap)
     v.addStretch(2)
+    # Expose for legacy external references (attach to underlying window if present)
+    target = getattr(ctx, 'w', ctx)
+    setattr(target, 'btn_settings', btn)
+    return home
+    target = getattr(ctx, 'w', ctx)
+    setattr(target, 'btn_settings', btn)
+    return home
     # Expose for legacy external references (attach to underlying window if present)
     target = getattr(ctx, 'w', ctx)
     setattr(target, 'btn_settings', btn)

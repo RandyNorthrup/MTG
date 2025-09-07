@@ -37,15 +37,19 @@ class ManaPool:
     """
     Simple mana pool tracking colored & generic (colorless) mana.
     No phase auto-empty logic here (caller responsible).
+    Advanced: tracks sources, handles land tapping, and supports strict payment for spells/abilities.
     """
     def __init__(self):
         self.pool: Dict[str,int] = {k:0 for k in ALL_KEYS}
+        self.sources: Dict[str, list] = {k: [] for k in ALL_KEYS}  # Track which permanents produced mana
 
-    def add(self, symbol: str, amount: int = 1):
+    def add(self, symbol: str, amount: int = 1, source=None):
         symbol = symbol.upper()
         if symbol not in ALL_KEYS:
             symbol = GENERIC_KEY
         self.pool[symbol] += amount
+        if source:
+            self.sources[symbol].extend([source] * amount)
 
     def can_pay(self, cost: Dict[str,int]) -> bool:
         # Check colored first; generic checked after computing surplus
@@ -76,26 +80,101 @@ class ManaPool:
             need = cost.get(c,0)
             if need:
                 self.pool[c] -= need
+                # Remove sources for paid mana
+                self.sources[c] = self.sources[c][need:]
         # Deduct generic: use generic first then surplus colored (arbitrary order)
         generic_need = cost.get(GENERIC_KEY,0)
         if generic_need:
             use = min(generic_need, self.pool[GENERIC_KEY])
             self.pool[GENERIC_KEY] -= use
+            self.sources[GENERIC_KEY] = self.sources[GENERIC_KEY][use:]
             generic_need -= use
             if generic_need:
                 # consume surplus colored
                 for c in COLOR_SYMBOLS:
                     if generic_need <= 0: break
                     avail = self.pool[c]
-                    if avail > 0:
-                        take = min(avail, generic_need)
-                        self.pool[c] -= take
-                        generic_need -= take
+                    take = min(avail, generic_need)
+                    self.pool[c] -= take
+                    self.sources[c] = self.sources[c][take:]
+                    generic_need -= take
         return True
 
     def clear(self):
         for k in self.pool:
             self.pool[k] = 0
+            self.sources[k] = []
+
+    def tap_land_for_mana(self, land_perm, symbol: str):
+        """
+        Tap a land permanent for mana of the given symbol.
+        Handles summoning sickness, checks if already tapped, and marks as tapped.
+        Returns True if successful, False if not.
+        """
+        if getattr(land_perm, "tapped", False):
+            return False
+        # Optionally: check for summoning sickness, land type, etc.
+        land_perm.tapped = True
+        self.add(symbol, 1, source=land_perm)
+        return True
+
+    def autotap_for_cost(self, battlefield, cost: Dict[str,int]) -> bool:
+        """
+        Attempt to tap lands on the battlefield to produce the required mana for cost.
+        Returns True if successful, False if not.
+        """
+        needed = cost.copy()
+        # Tap colored first
+        for color in COLOR_SYMBOLS:
+            n = needed.get(color, 0)
+            while n > 0:
+                found = next((perm for perm in battlefield if hasattr(perm, "card") and
+                              "Land" in getattr(perm.card, "types", []) and not getattr(perm, "tapped", False)
+                              and color in perm.card.text), None)
+                if not found:
+                    break
+                self.tap_land_for_mana(found, color)
+                n -= 1
+            needed[color] = n
+        # Tap for generic
+        generic = needed.get(GENERIC_KEY, 0)
+        while generic > 0:
+            found = next((perm for perm in battlefield if hasattr(perm, "card") and
+                          "Land" in getattr(perm.card, "types", []) and not getattr(perm, "tapped", False)), None)
+            if not found:
+                break
+            # Heuristic: try to tap for any color, prefer generic
+            produced = None
+            for color in COLOR_SYMBOLS:
+                if color in found.card.text:
+                    produced = color
+                    break
+            if not produced:
+                produced = GENERIC_KEY
+            self.tap_land_for_mana(found, produced)
+            generic -= 1
+        # After autotap, check if pool can pay
+        return self.can_pay(cost)
+
+    def cast_with_pool_and_lands(self, cost: Dict[str,int], battlefield) -> bool:
+        """
+        Try to pay cost using current pool, autotapping lands as needed.
+        Returns True if successful, False if not.
+        """
+        if self.can_pay(cost):
+            return self.pay(cost)
+        # Try to autotap lands to fill pool
+        if not self.autotap_for_cost(battlefield, cost):
+            return False
+        return self.pay(cost)
+
+    def untap_all(self, battlefield):
+        """
+        Untap all permanents on battlefield (typically at start of turn).
+        """
+        for perm in battlefield:
+            if hasattr(perm, "tapped"):
+                perm.tapped = False
 
     def __repr__(self):
         return f"ManaPool({{ {', '.join(f'{k}:{v}' for k,v in self.pool.items() if v)}}})"

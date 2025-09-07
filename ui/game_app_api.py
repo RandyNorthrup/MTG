@@ -7,19 +7,43 @@ from engine.game_state import GameState
 from typing import Optional
 
 class GameAppAPI:
-    """Facade for gameplay / lobby / deck / phase operations."""
+    """Facade for gameplay, UI, and engine delegation."""
 
     def __init__(self, main_window, game: GameState, ai_ids, args, new_game_factory):
         self.w = main_window
         self.args = args
         self._new_game_factory = new_game_factory
-        self.controller = GameController(game, ai_ids,
-                                         logging_enabled=not (args and getattr(args, "no_log", False)))
+        self.controller = GameController(game, ai_ids, logging_enabled=not (args and args.no_log))
         self.game = self.controller.game
         self._opening_sequence_done = False
-        self.pending_match_active = False
+        self.pending_match_active = False  # <-- Ensure this attribute always exists
         self._debug_win = None
-        self.board_window = None          # ADDED: external game/board window reference
+        self.board_window = None
+
+    # --- Gameplay/Turn/Phase mechanics: delegate to engine ---
+    def toggle_attacker(self, card):
+        self.controller.toggle_attacker(card)
+
+    def has_attackers(self):
+        return self.controller.has_attackers()
+
+    def commit_attackers(self):
+        self.controller.commit_attackers()
+
+    def handle_blocker_click(self, card):
+        self.controller.handle_blocker_click(card)
+
+    def commit_blockers(self):
+        self.controller.commit_blockers()
+
+    def advance_to_phase(self, phase_name):
+        self.controller.advance_to_phase(phase_name)
+
+    def play_land(self, card):
+        self.controller.play_land(card)
+
+    def cast_spell(self, card):
+        self.controller.cast_spell(card)
 
     # --- Game Window Management (ADDED) ---------------------------------
     def open_game_window(self):
@@ -43,11 +67,8 @@ class GameAppAPI:
 
     # Settings
     def open_settings(self):
-        if not getattr(self.w, 'settings_manager', None):
-            from ui.settings_tab import SettingsTabManager
-            self.w.settings_manager = SettingsTabManager(self)
-        self.w.settings_manager.open()
-    _open_settings_tab = open_settings  # legacy alias
+        if hasattr(self.w, "open_settings_window"):
+            self.w.open_settings_window()
 
     # Accessors
     def get_game(self): return self.game
@@ -425,3 +446,104 @@ class GameAppAPI:
         self.w.settings_manager.open()
         self.w.settings_manager = SettingsTabManager(self)
         self.w.settings_manager.open()
+        self.w.settings_manager = SettingsTabManager(self)
+        self.w.settings_manager.open()
+        self.w.settings_manager.open()
+
+    # --- Gameplay/Turn/Phase mechanics for UI delegation ---
+
+    def toggle_attacker(self, card):
+        # Find the permanent and toggle as attacker
+        perm = self._find_perm(card.id)
+        if perm:
+            self.game.combat.toggle_attacker(0, perm)
+
+    def has_attackers(self):
+        return bool(getattr(self.game.combat.state, "attackers", []))
+
+    def commit_attackers(self):
+        self.game.combat.attackers_committed()
+        self.controller.advance_step()  # or whatever advances to block phase
+
+    def handle_blocker_click(self, card):
+        perm = self._find_perm(card.id)
+        if not perm:
+            return
+        sel = getattr(self, '_pending_blocker', None)
+        if sel is None:
+            if perm.card.controller_id == 1:
+                self._pending_blocker = perm
+        else:
+            if perm in self.game.combat.state.attackers:
+                self.game.combat.toggle_blocker(1, sel, perm)
+                self._pending_blocker = None
+            elif perm.card.controller_id == 1:
+                self._pending_blocker = perm
+
+    def commit_blockers(self):
+        self.controller.advance_step()  # or whatever advances to combat damage
+        try:
+            self.game.combat.assign_and_deal_damage()
+        except Exception:
+            pass
+        self.controller.advance_step()  # advance to next phase
+
+    def advance_to_phase(self, phase_name):
+        # Implement logic to advance to a specific phase if needed
+        # For now, just call advance_step until phase matches
+        while self.controller.phase != phase_name:
+            self.controller.advance_step()
+
+    def play_land(self, card):
+        self.game.play_land(0, card)
+
+    def cast_spell(self, card):
+        # Implement autotap and cast logic here, previously in PlayArea
+        ps = self.game.players[0]
+        if not hasattr(ps, 'mana_pool'):
+            from engine.mana import ManaPool
+            ps.mana_pool = ManaPool()
+        pool = ps.mana_pool
+        from engine.mana import parse_mana_cost
+        cost_dict = parse_mana_cost(getattr(card, 'mana_cost_str', None))
+        if not cost_dict:
+            generic_need = card.mana_cost if isinstance(card.mana_cost, int) else 0
+            if generic_need:
+                cost_dict = {'G': generic_need}
+        colored_needs = {c: n for c, n in cost_dict.items() if c in ('W', 'U', 'B', 'R', 'G') and n > 0}
+        def land_color(perm):
+            n = perm.card.name.lower()
+            for t, c in [('plains', 'W'), ('island', 'U'), ('swamp', 'B'), ('mountain', 'R'), ('forest', 'G')]:
+                if t in n:
+                    return c
+            return 'G'
+        untapped = [perm for perm in ps.battlefield if 'Land' in perm.card.types and not perm.tapped]
+        for color, need in list(colored_needs.items()):
+            while need > 0:
+                found = next((l for l in untapped if land_color(l) == color), None)
+                if not found:
+                    break
+                self.game.tap_for_mana(0, found)
+                pool.add(color, 1)
+                untapped.remove(found)
+                need -= 1
+            colored_needs[color] = need
+        remaining = cost_dict.get('G', 0) + sum(rem for rem in colored_needs.values() if rem > 0)
+        for land in list(untapped):
+            if remaining <= 0:
+                break
+            sym = land_color(land)
+            self.game.tap_for_mana(0, land)
+            pool.add(sym, 1)
+            remaining -= 1
+        if not pool.can_pay(cost_dict):
+            return
+        pool.pay(cost_dict)
+        self.game.cast_spell(0, card)
+
+    def _find_perm(self, card_id):
+        for p in self.game.players:
+            for perm in p.battlefield:
+                if getattr(perm.card, 'id', None) == card_id:
+                    return perm
+        return None

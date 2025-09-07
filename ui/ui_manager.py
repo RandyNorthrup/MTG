@@ -21,7 +21,6 @@ except Exception:
 
 # Layout / style constants
 SIDEBAR_W = 130
-PHASE_BAR_H = 34
 TOP_BG = QColor(125,129,134)
 BOT_BG = QColor(48,51,55)  # ensure defined (used by painter sections)
 
@@ -88,9 +87,10 @@ class _ManaSelectDialog(QDialog):
         return sum(v for v in self.cost_remaining.values() if v>0)
 
 class PlayArea(QWidget):
-    def __init__(self, game, parent=None):
+    def __init__(self, game, api=None, parent=None):
         super().__init__(parent)
         self.game = game
+        self.api = api  # ADDED: reference to GameAppAPI or controller
         self.setMouseTracking(True)
         self.hover_card = None
         self.playable_ids = set()
@@ -109,6 +109,9 @@ class PlayArea(QWidget):
         self._update_playables()
         self.update()
 
+    def set_api(self, api):
+        self.api = api
+
     def refresh_board(self):
         self.update()
 
@@ -116,41 +119,33 @@ class PlayArea(QWidget):
         pass
 
     # ---------- Layout helpers ----------
-    def _phase_sequence(self):
-        return ["UNTAP","UPKEEP","DRAW","MAIN1","COMBAT","MAIN2","END"]
-
     def _layout(self):
         """
-        Layout with phase bar relocated just above the hand:
           [Opponent Battlefield/Lands]
           [Player Battlefield/Lands]
-          [Phase Bar]
           [Player Hand]
         """
-        w,h = self.width(), self.height()
-        phase_h = PHASE_BAR_H
-        hand_rect = QRect(SIDEBAR_W, h-HAND_HEIGHT, w-SIDEBAR_W, HAND_HEIGHT)
-
-        # Space above hand & phase bar
-        usable = h - HAND_HEIGHT - phase_h
-        top_h = usable//2
-        bottom_h = usable - top_h
-
-        top = QRect(SIDEBAR_W,0,w-SIDEBAR_W,top_h)
-        bottom = QRect(SIDEBAR_W, top.bottom(), w-SIDEBAR_W, usable-top_h)
-        phase_bar = QRect(SIDEBAR_W, bottom.bottom(), w-SIDEBAR_W, phase_h)
-
+        w = self.width()
+        h = self.height()
+        sidebar_w = SIDEBAR_W
+        top = QRect(sidebar_w, 0, w - sidebar_w, int(h * 0.38))
+        bottom = QRect(sidebar_w, top.bottom(), w - sidebar_w, int(h * 0.38))
+        hand_rect = QRect(sidebar_w, bottom.bottom(), w - sidebar_w, h - bottom.bottom())
         def zone(area: QRect):
-            pad=8
-            inner = area.adjusted(pad,pad,-pad,-pad)
-            split = int(inner.height()*0.68)
+            pad = 8
+            inner = area.adjusted(pad, pad, -pad, -pad)
+            split = int(inner.height() * 0.68)
             bf = QRect(inner.left(), inner.top(), inner.width(), split)
-            lands = QRect(inner.left(), bf.bottom()+6, inner.width(), max(0, inner.bottom()-(bf.bottom()+6)))
+            lands = QRect(inner.left(), bf.bottom() + 6, inner.width(), max(0, inner.bottom() - (bf.bottom() + 6)))
             return {"battlefield": bf, "lands": lands}
-
-        return {"sidebar": QRect(0,0,SIDEBAR_W,h),
-                "top": top, "bottom": bottom, "phase": phase_bar, "hand": hand_rect,
-                "top_zones": zone(top), "bottom_zones": zone(bottom)}
+        return {
+            "sidebar": QRect(0, 0, SIDEBAR_W, h),
+            "top": top,
+            "bottom": bottom,
+            "hand": hand_rect,
+            "top_zones": zone(top),
+            "bottom_zones": zone(bottom)
+        }
 
     # ---------- Commander damage / counters ----------
     def _commander_damage_received(self, player):
@@ -183,7 +178,6 @@ class PlayArea(QWidget):
         if len(self.game.players) > 1:
             self._draw_battle_zones(p, self.game.players[1], layout["top_zones"], True)
         self._draw_battle_zones(p, self.game.players[0], layout["bottom_zones"], False)
-        self._draw_phase_bar(p, layout["phase"])
         self._draw_hand(p, layout["hand"])
         if self.hover_card and self.zoom_enabled:
             self._draw_zoom(p, self.hover_card)
@@ -286,24 +280,8 @@ class PlayArea(QWidget):
         if size>max_show:
             p.setPen(QColor(230,230,235))
             p.drawText(battlefield_rect.left()+6, y+CARD_H+14, f"+{size-max_show}")
-
-    # ---------- Phase Bar ----------
-    def _draw_phase_bar(self, p: QPainter, rect: QRect):
-        phases = self._phase_sequence()
-        cur = self.game.phase.upper()
-        if cur.startswith("COMBAT"): cur = "COMBAT"
-        seg_w = rect.width()//len(phases)
-        p.save(); p.fillRect(rect, QColor(25,25,28))
-        font = p.font(); font.setPointSize(10); p.setFont(font)
-        for i, ph in enumerate(phases):
-            seg = QRect(rect.left()+i*seg_w, rect.top(), seg_w, rect.height())
-            active = (ph==cur)
-            p.setPen(QPen(QColor(55,55,65),1))
-            p.fillRect(seg.adjusted(2,4,-2,-4), QColor(120,90,40) if active else QColor(50,50,55))
-            p.setPen(QColor(255,255,255) if active else QColor(200,200,205))
-            p.drawText(seg, Qt.AlignCenter, ph)
-        p.restore()
-
+            
+            
     def _phase_hit_test(self, pt: QPoint):
         bar = self._layout()["phase"]
         if not bar.contains(pt): return None
@@ -355,79 +333,68 @@ class PlayArea(QWidget):
 
     def mousePressEvent(self, e: QMouseEvent):
         pt = e.position().toPoint()
-        phase = self.game.phase.upper()
-        # Declare attackers
-        if phase == 'COMBAT_DECLARE' and e.button()==Qt.LeftButton and self.game.active_player==0:
+        # All gameplay logic below is now delegated to api/controller
+        if not self.api:
+            return
+
+        # Example: Declare attackers
+        if self._is_combat_declare_phase() and e.button() == Qt.LeftButton and self.game.active_player == 0:
             card = self._hit_test_card(pt)
             if card:
-                perm = _find_perm(self.game, card.id)
-                if perm:
-                    self.game.combat.toggle_attacker(0, perm)
-                    self.update()
-                    return
-        # Commit attackers
-        if phase == 'COMBAT_DECLARE' and e.button()==Qt.RightButton and self.game.active_player==0:
-            if self.game.combat.state.attackers:
-                self.game.combat.attackers_committed()
-                self.game.phase = 'COMBAT_BLOCK'
+                self.api.toggle_attacker(card)
                 self.update()
                 return
-        # Blocking
-        if phase == 'COMBAT_BLOCK' and e.button()==Qt.LeftButton:
+
+        # Example: Commit attackers
+        if self._is_combat_declare_phase() and e.button() == Qt.RightButton and self.game.active_player == 0:
+            if self.api.has_attackers():
+                self.api.commit_attackers()
+                self.update()
+                return
+
+        # Example: Blocking
+        if self._is_combat_block_phase() and e.button() == Qt.LeftButton:
             card = self._hit_test_card(pt)
-            if not card: return
-            perm = _find_perm(self.game, card.id)
-            if not perm: return
-            sel = getattr(self,'_pending_blocker',None)
-            if sel is None:
-                if perm.card.controller_id == 1:
-                    self._pending_blocker = perm
-            else:
-                if perm in self.game.combat.state.attackers:
-                    self.game.combat.toggle_blocker(1, sel, perm)
-                    self._pending_blocker = None
-                elif perm.card.controller_id == 1:
-                    self._pending_blocker = perm
+            if not card:
+                return
+            self.api.handle_blocker_click(card)
             self.update()
             return
-        if phase == 'COMBAT_BLOCK' and e.button()==Qt.RightButton:
-            self.game.phase = 'COMBAT_DAMAGE'
-            try:
-                self.game.combat.assign_and_deal_damage()
-            except Exception:
-                pass
-            self.game.phase = 'MAIN2'
+
+        if self._is_combat_block_phase() and e.button() == Qt.RightButton:
+            self.api.commit_blockers()
             self.update()
             return
+
         # Phase bar click / zoom drag
-        if e.button()==Qt.LeftButton:
+        if e.button() == Qt.LeftButton:
             if self.hover_card and self._zoom_rect().contains(pt):
-                self._zoom_drag = True; self._zoom_drag_offset = pt - self.zoom_pos; return
+                self._zoom_drag = True
+                self._zoom_drag_offset = pt - self.zoom_pos
+                return
             ph = self._phase_hit_test(pt)
             if ph:
-                seq = self._phase_sequence()
-                cur = self.game.phase.upper()
-                if cur.startswith("COMBAT"): cur = "COMBAT"
-                if ph in seq:
-                    ci = seq.index(cur); ti = seq.index(ph)
-                    if ti>ci:
-                        for _ in range(ti-ci):
-                            if getattr(self.game.stack,'can_resolve',lambda:False)(): break
-                            self.game.next_phase()
-                        self.update()
-                        return
+                self.api.advance_to_phase(ph)
+                self.update()
+                return
+
         # Hand play
-        if e.button()!=Qt.LeftButton: return
+        if e.button() != Qt.LeftButton:
+            return
         hand_rect = self._layout()["hand"]
-        if not hand_rect.contains(pt): return
-        if self.game.active_player!=0 or self.game.phase not in ('MAIN1','MAIN2'): return
+        if not hand_rect.contains(pt):
+            return
+        if self.game.active_player != 0 or self.game.phase not in ('MAIN1', 'MAIN2'):
+            return
         card = self._hit_test_card(pt)
-        if not card or card not in self.game.players[0].hand: return
-        if card.id not in self.playable_ids: return
+        if not card or card not in self.game.players[0].hand:
+            return
+        if card.id not in self.playable_ids:
+            return
         if 'Land' in card.types:
-            self.game.play_land(0, card)
+            self.api.play_land(card)
         else:
-            self._autotap_and_cast(card)
+            self.api.cast_spell(card)
         self._update_playables()
 
     def mouseReleaseEvent(self, e: QMouseEvent):
@@ -590,6 +557,14 @@ class PlayArea(QWidget):
                     if card.id == perm.card.id:
                         p.drawRoundedRect(r.adjusted(1,1,-1,-1),6,6)
         p.end()
+
+    # --- Helper methods for phase/turn checks (now just UI helpers) ---
+    def _is_combat_declare_phase(self):
+        return self.game.phase.upper() == 'COMBAT_DECLARE'
+
+    def _is_combat_block_phase(self):
+        return self.game.phase.upper() == 'COMBAT_BLOCK'
+
 
 def _find_perm(game, card_id):
     for p in game.players:
