@@ -11,6 +11,7 @@ except Exception:
         return
 
 from engine.deck_specs import build_default_deck_specs, collect_ai_player_ids
+from engine.game_ids import generate_game_id, register_game_id
 
 
 def parse_args():
@@ -185,6 +186,10 @@ def create_initial_game(args):
     maybe_bootstrap_sql()  # ADDED: enable + migrate JSON -> SQLite if configured
     set_sdk_online(bool(getattr(args, 'sdk_online', False)))
     specs = _deck_specs_from_args(getattr(args, 'deck', None))
-    return new_game(specs if specs else None, ai_enabled=not args.no_ai)
+    game, ai_ids = new_game(specs if specs else None, ai_enabled=not args.no_ai)
+    gid = generate_game_id()
+    register_game_id(gid)
+    game.game_id = gid
+    return game, ai_ids
 
 # (No logic change – image cache initializes lazily in main window via init_image_cache)

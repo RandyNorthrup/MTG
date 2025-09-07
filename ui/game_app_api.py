@@ -6,21 +6,26 @@ from engine.game_controller import GameController
 from engine.game_state import GameState
 from engine.rules_engine import init_rules
 from image_cache import ensure_card_image
+from engine.game_ids import generate_game_id, register_game_id
 
 class GameAppAPI:
     """
     Facade exposing game + lobby + deck + phase operations for UI tabs.
     MainWindow now only creates this and wires it into tabs.
     """
-    def __init__(self, main_window, game: GameState, ai_ids, args, new_game_factory):
+    def __init__(self, main_window, game, ai_ids, args, new_game_factory):
         self.w = main_window
         self.args = args
         self._new_game_factory = new_game_factory
         self.controller = GameController(game, ai_ids, logging_enabled=not (args and args.no_log))
         self.game = self.controller.game
+        self.game_id = generate_game_id()
+        register_game_id(self.game_id)
+        self.game.game_id = self.game_id
         self._opening_sequence_done = False
         self.pending_match_active = False
         self._debug_win = None
+        self._game_window = None  # gameplay window (created later)
 
     # --- Accessors for tabs ---
     def get_game(self):
@@ -110,6 +115,7 @@ class GameAppAPI:
         self.controller.set_starter(starter_index)
         self._handle_opening_hands_and_mulligans()
         self.controller.log_phase()
+        self.open_game_window()               # CHANGED
         self._phase_ui()
 
     def start_game_without_roll(self):
@@ -123,6 +129,7 @@ class GameAppAPI:
         self.controller.set_starter(0)
         self._handle_opening_hands_and_mulligans()
         self.controller.log_phase()
+        self.open_game_window()               # CHANGED
         self._phase_ui()
 
     def prompt_first_player_roll(self):
@@ -147,17 +154,20 @@ class GameAppAPI:
             self.finalize_start_after_roll(starter)
 
     # --- Game progression ---
-    def advance_phase(self):
+    def advance_phase(self):  # CHANGED: ensure single AI tick & UI update without timers
         if not (self.controller.in_game and self.controller.first_player_decided):
             return
         self.controller.advance_phase()
+        # Optional: one immediate AI consideration after each phase advance
+        self.controller.tick(lambda: None)
         self._phase_ui()
 
-    def ai_tick(self):
+    def ai_tick(self):  # CHANGED: remove dependency on window timer
         if not (self.controller.in_game and self.controller.first_player_decided):
             return
+        pa = self._current_play_area()
         self.controller.tick(lambda: (
-            hasattr(self.w.play_area, 'refresh_board') and self.w.play_area.refresh_board()
+            pa.refresh_board() if (pa and hasattr(pa, "refresh_board")) else None
         ))
         self._phase_ui()
 
@@ -175,8 +185,9 @@ class GameAppAPI:
             QMessageBox.critical(self.w, "Reload Failed", str(ex))
             return
         self.game = self.controller.game
-        if hasattr(self.w.play_area, 'set_game'):
-            self.w.play_area.set_game(self.game)
+        pa = self._current_play_area()
+        if pa and hasattr(pa, "set_game"):
+            pa.set_game(self.game)
         self._log("[RELOAD] Player 0 deck reloaded.")
         if hasattr(self.w, 'decks_manager'):
             self.w.decks_manager.refresh()
@@ -193,7 +204,8 @@ class GameAppAPI:
             self._debug_win.close()
             self._debug_win = None
         else:
-            self._debug_win = GameDebugWindow(self.game, getattr(self.w, 'play_area', None), self.w)
+            pa = self._current_play_area()
+            self._debug_win = GameDebugWindow(self.game, pa, self.w if pa is None else self._game_window)
             self._debug_win.show()
 
     # --- Key handling (can be called by MainWindow or Play tab) ---
@@ -219,10 +231,23 @@ class GameAppAPI:
     def _rebuild_game_with_specs(self, specs):
         game, ai_ids = self._new_game_factory(specs, ai_enabled=True)
         logging_flag = self.controller.logging_enabled
+        from engine.game_ids import generate_game_id, register_game_id
+        self.game_id = generate_game_id()
+        register_game_id(self.game_id)
         self.controller = GameController(game, ai_ids, logging_enabled=logging_flag)
         self.game = self.controller.game
-        if hasattr(self.w.play_area, 'set_game'):
-            self.w.play_area.set_game(self.game)
+        self.game.game_id = self.game_id
+        # Close any existing game window (new session)
+        if self._game_window:
+            try:
+                self._game_window.close()
+            except Exception:
+                pass
+            self._game_window = None
+        # UPDATE: only touch play area if a game window is already open (not MainWindow)
+        pa = self._current_play_area()
+        if pa and hasattr(pa, "set_game"):
+            pa.set_game(self.game)
         self.w.logging_enabled = self.controller.logging_enabled
         if hasattr(self.w, 'decks_manager'):
             self.w.decks_manager.refresh()
@@ -296,6 +321,27 @@ class GameAppAPI:
             from ui.settings_tab import SettingsTabManager
             self.w.settings_manager = SettingsTabManager(self)
         self.w.settings_manager.open()
+
+    # --- Game window management (NEW) ---
+    def open_game_window(self):
+        """Spawn gameplay window if not already open."""
+        if self._game_window:
+            return
+        from ui.game_window import GameWindow
+        self._game_window = GameWindow(self, self.game_id)
+        self._game_window.show()
+
+    def attach_game_window(self, gw):
+        self._game_window = gw
+
+    def handle_game_window_closed(self):
+        self._game_window = None
+
+    # --- NEW: unified play area accessor ---
+    def _current_play_area(self):
+        if self._game_window and hasattr(self._game_window, "play_area"):
+            return self._game_window.play_area
+        return None
 
     # Legacy compatibility (home tab / older code may still call):
     _open_settings_tab = open_settings

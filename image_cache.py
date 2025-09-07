@@ -37,18 +37,21 @@ def _safe_remove(path: str):
 
 def _is_valid_image(path: str) -> bool:
     """
-    Basic sanity: exists, minimum size, optional QPixmap load.
+    Basic sanity: exists, minimum size, optional QPixmap load (only if a QApplication exists).
     """
     try:
         if not os.path.isfile(path):
             return False
-        if os.path.getsize(path) < 512:  # reject tiny / truncated
+        if os.path.getsize(path) < 512:
             return False
+        # Safe QPixmap check only after QApplication is created
         try:
-            from PySide6.QtGui import QPixmap  # type: ignore
-            pm = QPixmap(path)
-            if pm.isNull():
-                return False
+            from PySide6.QtWidgets import QApplication  # type: ignore
+            if QApplication.instance() is not None:
+                from PySide6.QtGui import QPixmap  # type: ignore
+                pm = QPixmap(path)
+                if pm.isNull():
+                    return False
         except Exception:
             pass
         return True

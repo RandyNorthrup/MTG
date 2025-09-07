@@ -1,17 +1,16 @@
-﻿import sys
-import os
-import tempfile
+﻿import os
+import sys
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout
-from PySide6.QtCore import QTimer, Qt
+
 from config import *
 from ui.ui_manager import PlayArea
 from ui.home_tab import build_home_tab
 from ui.decks_tab import DecksTabManager
-from ui.play_tab import build_play_stack
-from ui.phase_ui import update_phase_ui as _phase_update
+from engine.phase_hooks import install_phase_log_deduper  # CHANGED: only deduper needed
 from ui.game_app_api import GameAppAPI
-from engine.game_init import parse_args, create_initial_game, new_game  # ADDED (moved logic)
-from image_cache import init_image_cache, teardown_cache, repair_cache  # CHANGED
+from engine.game_init import parse_args, create_initial_game, new_game
+from image_cache import init_image_cache, teardown_cache, repair_cache
 
 # --- Main Window Shell (logic delegated to GameAppAPI) ----------------------
 class MainWindow(QMainWindow):
@@ -19,23 +18,17 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("MTG Commander (Qt)")
         self.args = args
-        self.api = GameAppAPI(self, game, ai_ids, args, new_game)  # still supply factory
+        self.api = GameAppAPI(self, game, ai_ids, args, new_game)
         self.controller = self.api.controller
+        install_phase_log_deduper(self.controller)
         self.game = self.api.game
-        self.play_area = PlayArea(self.game)
-        if hasattr(self.play_area, 'enable_drag_and_drop'):
-            self.play_area.enable_drag_and_drop()
+        # REMOVED: embedded PlayArea & phase machinery (moved to GameWindow)
         self.logging_enabled = self.controller.logging_enabled
         self.tabs = QTabWidget()
         self._init_tabs()
         self.setCentralWidget(self.tabs)
-        self._phase_timer = QTimer(self)
-        self._phase_timer.timeout.connect(self.api.ai_tick)
-        self._phase_timer.start(400)
         self._debug_win = None
         self.settings_manager = None
-        self._update_phase_ui()
-        init_image_cache(self, interval_sec=300)  # ADDED: periodic image cache maintenance
 
     def set_logging_enabled(self, value: bool):
         self.controller.logging_enabled = bool(value)
@@ -46,26 +39,19 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(home, "Home")
         self.decks_manager = DecksTabManager(self.api)
         self.tabs.addTab(self.decks_manager.build_tab(), "Decks")
+        # Lobby only (no board in main window)
+        from ui.play_tab import build_play_stack
         self.play_stack, self.lobby_widget = build_play_stack(self.api)
+        # Strip board page if present (keep lobby page only)
+        # (build_play_stack returns a stack; we keep it for compatibility/lobby UI)
         play_tab = QWidget()
-        pv = QVBoxLayout(play_tab)
-        pv.setContentsMargins(0, 0, 0, 0)
-        pv.addWidget(self.play_stack)
-        self.tabs.addTab(play_tab, "Play")
-
-    def _refresh_deck_tab(self):
-        if hasattr(self, 'decks_manager'):
-            self.decks_manager.refresh()
-
-    def _update_phase_ui(self):
-        if not getattr(self.controller, 'first_player_decided', False):
-            return
-        _phase_update(self)
+        v = QVBoxLayout(play_tab); v.setContentsMargins(0,0,0,0)
+        v.addWidget(self.play_stack)
+        self.tabs.addTab(play_tab, "Lobby")
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
-            self.close()
-            return
+            self.close(); return
         self.api.handle_key(e.key())
 
     def closeEvent(self, ev):  # ADDED graceful cache teardown
@@ -77,18 +63,22 @@ class MainWindow(QMainWindow):
     def _toggle_debug_window(self): self.api.toggle_debug_window()
 
 # --- Entry ------------------------------------------------------------------
+def _prepare_environment():
+    """Set env toggles before game creation."""
+    if os.path.exists(os.path.join("data", "cards", "cards.db")) and not os.environ.get("MTG_SQL"):
+        os.environ["MTG_SQL"] = "1"
+
 def main():
-    # Optional: user can pre-create data/cards/cards.db or set MTG_SQL=1
-    if os.path.exists(os.path.join('data','cards','cards.db')) and not os.environ.get('MTG_SQL'):
-        os.environ['MTG_SQL'] = '1'
-    args = parse_args()                      # moved out
-    game, ai_ids = create_initial_game(args) # moved out
-    repair_cache()  # CHANGED: single centralized repair
+    """Application entry point."""
+    _prepare_environment()
+    args = parse_args()
+    game, ai_ids = create_initial_game(args)
     app = QApplication(sys.argv)
-    w = MainWindow(game=game, ai_ids=ai_ids, args=args)
-    w.resize(SCREEN_W, SCREEN_H)
-    w.show()
+    repair_cache()
+    win = MainWindow(game=game, ai_ids=ai_ids, args=args)
+    win.resize(SCREEN_W, SCREEN_H)
+    win.show()
     sys.exit(app.exec())
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

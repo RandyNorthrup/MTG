@@ -85,12 +85,8 @@ class LobbyWidget(QWidget):
     def _start_clicked(self):
         if hasattr(self.ctx, 'start_pending_match'):
             self.ctx.start_pending_match()
-            # switch to board
-            parent = self.parent()
-            while parent and not isinstance(parent, QStackedWidget):
-                parent = parent.parent()
-            if parent:
-                parent.setCurrentIndex(1)
+            if hasattr(self.ctx, 'open_game_window'):
+                self.ctx.open_game_window()  # NEW: launch separate window
 
     def _cancel_clicked(self):
         if hasattr(self.ctx, 'cancel_pending_match'):
@@ -148,6 +144,10 @@ def build_play_stack(ctx):
         warn.setStyleSheet("color:orange;")
         v.addWidget(warn, 1)
     stack.addWidget(board_wrap)
+    stack.setCurrentIndex(0)
+    # Expose lobby to underlying window for API callbacks
+    setattr(ctx.w, 'lobby_widget', lobby)
+    return stack, lobby
     stack.setCurrentIndex(0)
     # Expose lobby to underlying window for API callbacks
     setattr(ctx.w, 'lobby_widget', lobby)
