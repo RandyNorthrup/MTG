@@ -7,6 +7,9 @@ from engine.game_state import GameState, PlayerState
 from ai.basic_ai import BasicAI
 from engine.turn_manager import TurnManager
 from engine.rules_engine import init_rules
+from engine.turn_structure import (
+    PHASE_SEQUENCE, PHASE_STEPS, first_step_of_phase, next_flat_step
+)
 
 # --- AI enhancer (moved from main) ---
 def _enhance_ai_controllers(game: GameState, ai_controllers: Dict[int, BasicAI]):
@@ -210,6 +213,11 @@ class GameController:
         self.auto_step_cooldown_ms = 1000
         self._last_auto_step_s = 0.0
 
+        # Turn structure state
+        self.current_phase: str = PHASE_SEQUENCE[0]
+        self.current_step: str = first_step_of_phase(self.current_phase)
+        self.visited_phases: set[str] = set()  # phases fully completed this turn
+
     # ---------- Logging ----------
     def log_phase(self):
         if not self.logging_enabled: return
@@ -224,6 +232,7 @@ class GameController:
     def enter_match(self):
         self.in_game = True
         self._begin_game_flow()
+        self._init_turn_structure()
 
     def _begin_game_flow(self):
         if self._game_flow_started: return
@@ -237,6 +246,14 @@ class GameController:
         self.first_player_decided = True
         if self.logging_enabled:
             print("[START] Single-player game begun (no roll).")
+
+    def _init_turn_structure(self):
+        """Initialize / reset turn-structure state for a new game or turn."""
+        self.current_phase = PHASE_SEQUENCE[0]
+        self.current_step = first_step_of_phase(self.current_phase)
+        # track for sanity (not re-entry)
+        self._turn_no = 1
+        self._active_player = 0  # Index of the active player
 
     # ---------- Roll / mulligans ----------
     def perform_first_player_roll(self):
@@ -286,6 +303,69 @@ class GameController:
             self.game.next_phase()
         except Exception:
             pass
+
+    def _rotate_active_player(self):
+        """Rotate to the next player in turn order."""
+        self._active_player = (self._active_player + 1) % len(self.game.players)
+        self.game.active_player = self._active_player
+
+    def start_new_turn(self):
+        self._rotate_active_player()
+        self._turn_no += 1
+        self.current_phase = PHASE_SEQUENCE[0]
+        self.current_step = first_step_of_phase(self.current_phase)
+
+    # --- Phase / Step Advancement (STRICT) -------------------------------- ADDED
+    def advance_step(self):
+        """
+        Strict ordered advancement (one atomic sub-step).
+        """
+        if not getattr(self, 'in_game', False):
+            return
+        nxt = next_flat_step(self.current_phase, self.current_step)
+        if nxt is None:
+            # End of turn -> begin next turn
+            self.start_new_turn()
+        else:
+            self.current_phase, self.current_step = nxt
+        if getattr(self, 'logging_enabled', False):
+            print(f"[TURN] {self.current_phase}:{self.current_step} (Active: {self.active_player_name})")
+
+    # Backward compatibility: existing UI may still call advance_phase
+    def advance_phase(self):  # CHANGED (wrapper)
+        self.advance_step()
+
+    # --- Internal hook executor (optional stub) --------------------------- ADDED
+    def _execute_step_hooks(self, phase: str, step: str):
+        """
+        Dispatch priority / triggers / SBA ordering around a step.
+        Extend or integrate with your rules engine if needed.
+        """
+        # Example (pseudo):
+        # self.rules_engine.handle_state_based_actions()
+        # self.rules_engine.fire_triggers("before", phase, step)
+        # self.rules_engine.process_priority_window()
+        # self.rules_engine.fire_triggers("after", phase, step)
+        pass
+
+    # Provide properties for UI consistency (phase = current_phase; step = current_step)
+    @property
+    def phase(self):  # ADDED
+        return self.current_phase
+
+    @property
+    def step(self):  # ADDED
+        return self.current_step
+
+    @property
+    def active_player(self):
+        return self._active_player
+
+    @property
+    def active_player_name(self):
+        if self.game.players and 0 <= self._active_player < len(self.game.players):
+            return self.game.players[self._active_player].name
+        return "—"
 
     # ---------- AI tick ----------
     def tick(self, refresh_callable: Callable[[], None] | None = None):
@@ -390,3 +470,20 @@ class GameController:
         self.skip_first_draw_player = None
         self.skip_first_draw_used = False
         return self.game
+"""
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        specs = []
+        for p in self.game.players:
+            deck_path = path if p.player_id == 0 else getattr(p,'source_path', None)
+            specs.append((p.name, deck_path, p.player_id in self.ai_controllers))
+        new_state, ai_ids = new_game_fn(specs, ai_enabled=True)
+        self.game = new_state
+        self.ai_controllers = {pid: BasicAI(pid=pid) for pid in ai_ids}
+        _enhance_ai_controllers(self.game, self.ai_controllers)
+        self.first_player_decided = False
+        self.opening_hands_drawn = False
+        self.skip_first_draw_player = None
+        self.skip_first_draw_used = False
+        return self.game
+        """

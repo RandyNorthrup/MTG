@@ -1,63 +1,66 @@
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QStackedWidget, QMessageBox
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+from PySide6.QtCore import Qt, QTimer
 from ui.ui_manager import PlayArea
-from engine.phase_hooks import update_phase_ui as _phase_update, install_phase_log_deduper
 
 class GameWindow(QMainWindow):
-    def __init__(self, api, game_id: str):
+    """Standalone play / board window used for roll + mulligan dialogs."""
+    def __init__(self, api):
         super().__init__()
-        self.setMinimumSize(1280, 720)  # NEW: enforce minimum size
-        self.setAttribute(Qt.WA_DeleteOnClose, True)  # ensure cleanup
         self.api = api
-        self.controller = api.controller
-        install_phase_log_deduper(self.controller)
-        self.game = self.controller.game
-        self.setWindowTitle(f"Game {game_id}")
-        # Stacked layout to reuse existing phase bar insertion logic (expects play_stack index1)
-        self.play_stack = QStackedWidget()
-        self.play_stack.addWidget(QWidget())  # placeholder index0
-        board_wrap = QWidget()
-        v = QVBoxLayout(board_wrap)
-        v.setContentsMargins(0,0,0,0); v.setSpacing(2)
-        top = QHBoxLayout()
-        btn_close = QPushButton("Concede / Close")
-        btn_close.clicked.connect(self.close)
-        self.btn_end_phase = QPushButton("End Phase")
-        self.btn_end_phase.clicked.connect(self._end_phase)
-        self.btn_skip_combat = QPushButton("Skip Combat")
-        self.btn_skip_combat.clicked.connect(self._skip_combat_confirm)
-        top.addWidget(btn_close)
-        top.addWidget(self.btn_end_phase)
-        top.addWidget(self.btn_skip_combat)
-        top.addStretch(1)
-        v.addLayout(top)
-        self.play_area = PlayArea(self.game)
+        self.setWindowTitle("Game Board")
+        self.setMinimumSize(1280, 720)  # ADDED enforce minimum board size
+        self.play_area = PlayArea(api.game)
         if hasattr(self.play_area, "enable_drag_and_drop"):
             self.play_area.enable_drag_and_drop()
-        v.addWidget(self.play_area, 1)
-        self.play_stack.addWidget(board_wrap)
-        self.play_stack.setCurrentIndex(1)
-        root = QWidget(); root_l = QVBoxLayout(root); root_l.setContentsMargins(0,0,0,0)
-        root_l.addWidget(self.play_stack, 1)
-        self.setCentralWidget(root)
-        self._refresh_combat_buttons()
-        _phase_update(self)
 
-        # --- UPDATED positioning (no parenting / no always-on-top) ---
-        mw = getattr(api, 'w', None)
-        if mw:
-            try:
-                g = mw.frameGeometry()
-                # Ensure not smaller than minimums
-                w = max(1280, int(g.width() * 0.9))
-                h = max(720, int(g.height() * 0.9))
-                self.resize(w, h)
-                c = g.center()
-                self.move(c.x() - self.width() // 2, c.y() - self.height() // 2)
-            except Exception:
-                pass
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        self.show(); self.raise_(); self.activateWindow()
+        root = QWidget(); self.setCentralWidget(root)
+        v = QVBoxLayout(root); v.setContentsMargins(6,6,6,6); v.setSpacing(4)
+
+        bar = QHBoxLayout()
+        self.phase_lbl = QLabel("Phase: —")
+        self.phase_lbl.setStyleSheet("font-weight:bold;")
+        btn_adv = QPushButton("Advance (Space)")
+        btn_adv.clicked.connect(api.advance_phase)
+        btn_dbg = QPushButton("Debug")
+        btn_dbg.clicked.connect(api.toggle_debug_window)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        bar.addWidget(self.phase_lbl)
+        bar.addStretch(1)
+        bar.addWidget(btn_adv)
+        bar.addWidget(btn_dbg)
+        bar.addWidget(btn_close)
+        v.addLayout(bar)
+
+        v.addWidget(self.play_area, 1)
+
+        # Ensure initial size is at least the minimum even if platform defaulted smaller
+        if self.width() < 1280 or self.height() < 720:  # ADDED
+            self.resize(max(self.width(), 1280), max(self.height(), 720))
+        self._phase_timer = QTimer(self)
+        self._phase_timer.timeout.connect(self.refresh_phase)
+        self._phase_timer.start(750)
+        self.refresh_phase()
+
+    def refresh_phase(self):
+        phase = getattr(self.api.controller, 'phase', '?')
+        step = getattr(self.api.controller, 'step', None)
+        ap_name = getattr(self.api.controller, 'active_player_name', "—")
+        if step and step != phase:
+            self.phase_lbl.setText(f"Phase: {phase} ({step})  Active: {ap_name}")
+        else:
+            self.phase_lbl.setText(f"Phase: {phase}  Active: {ap_name}")
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.close(); return
+        self.api.handle_key(e.key())
+        super().keyPressEvent(e)
+
+    def closeEvent(self, ev):
+        if getattr(self.api, 'board_window', None) is self:
+            self.api.board_window = None
+        super().closeEvent(ev)
         # Drop always-on-top shortly after showing so both windows stay interactive
         QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))
 
@@ -136,8 +139,6 @@ class GameWindow(QMainWindow):
         self.api.advance_phase()
         if hasattr(self.play_area, "refresh_board"):
             self.play_area.refresh_board()
-        _phase_update(self)
-        self._update_skip_combat_btn()
 
     def _skip_combat_confirm(self):
         if not self._confirm("Skip Combat", "You have attackers available.\nSkip the entire combat phase?"):
@@ -161,8 +162,6 @@ class GameWindow(QMainWindow):
                 break
         if hasattr(self.play_area, "refresh_board"):
             self.play_area.refresh_board()
-        _phase_update(self)
-        self._update_skip_combat_btn()
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
@@ -170,8 +169,6 @@ class GameWindow(QMainWindow):
         self.api.handle_key(e.key())
         if hasattr(self.play_area, "refresh_board"):
             self.play_area.refresh_board()
-        _phase_update(self)
-        self._update_skip_combat_btn()
 
     def closeEvent(self, ev):
         try:
@@ -209,4 +206,15 @@ class GameWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         # Drop always-on-top shortly after showing so both windows stay interactive
+        QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))
+        self.raise_()
+        self.activateWindow()
+        # Drop always-on-top shortly after showing so both windows stay interactive
+        QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))
+        QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))
+        self.raise_()
+        self.activateWindow()
+        # Drop always-on-top shortly after showing so both windows stay interactive
+        QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))
+        QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))
         QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))

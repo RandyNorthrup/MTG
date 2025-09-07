@@ -58,3 +58,12 @@ def update_phase_ui(host):
             pa.update_phase_banner(disp, ap_name)
     except Exception:
         pass
+
+"""
+DEPRECATED: Legacy phase hook system replaced by strict turn_structure + GameController.advance_step().
+All functions are inert no-ops retained for backward compatibility only.
+"""
+
+def register_phase_hook(*_, **__): pass
+def clear_phase_hooks(): pass
+def run_phase_hooks(*_, **__): pass

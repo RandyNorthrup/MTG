@@ -61,10 +61,6 @@ class MainWindow(QMainWindow):
         teardown_cache()
         super().closeEvent(ev)
 
-    # Legacy stubs
-    def _reload_player0(self): self.api.reload_player0(getattr(self, 'current_deck_path', None))
-    def _toggle_debug_window(self): self.api.toggle_debug_window()
-
 # --- Entry ------------------------------------------------------------------
 def _prepare_environment():
     """Set env toggles before game creation."""

@@ -4,6 +4,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMessageBox
 from engine.game_controller import GameController
 from engine.game_state import GameState
+from typing import Optional
 
 class GameAppAPI:
     """Facade for gameplay / lobby / deck / phase operations."""
@@ -18,6 +19,27 @@ class GameAppAPI:
         self._opening_sequence_done = False
         self.pending_match_active = False
         self._debug_win = None
+        self.board_window = None          # ADDED: external game/board window reference
+
+    # --- Game Window Management (ADDED) ---------------------------------
+    def open_game_window(self):
+        """Create or focus the dedicated board window."""
+        if self.board_window and self.board_window.isVisible():
+            self.board_window.raise_()
+            self.board_window.activateWindow()
+            return
+        try:
+            from ui.game_window import GameWindow
+        except Exception as ex:
+            self._log(f"[BOARD] Failed to open game window: {ex}")
+            return
+        self.board_window = GameWindow(self)
+        self.board_window.show()
+
+    def _ensure_game_window(self):
+        """Guarantee a visible board window before interactive dialogs."""
+        if not self.board_window or not self.board_window.isVisible():
+            self.open_game_window()
 
     # Settings
     def open_settings(self):
@@ -106,6 +128,7 @@ class GameAppAPI:
 
     # Start / mulligans
     def finalize_start_after_roll(self, starter_index: int):
+        self._ensure_game_window()                     # ADDED
         if not self.controller.in_game:
             self.controller.enter_match()
         self.controller.set_starter(starter_index)
@@ -114,6 +137,7 @@ class GameAppAPI:
         self._phase_ui()
 
     def start_game_without_roll(self):
+        self._ensure_game_window()                     # ADDED
         if len(self.game.players) == 1:
             self.ensure_ai_opponent()
             if len(self.game.players) > 1:
@@ -129,36 +153,60 @@ class GameAppAPI:
     def prompt_first_player_roll(self):
         if self.controller.first_player_decided or len(self.game.players) < 2:
             return
-        box = QMessageBox(self.w)
+        self._ensure_game_window()    # (if present in your version) safe call; ignore if method absent
+        host = getattr(self, 'board_window', None) or self.w
+        box = QMessageBox(host)
         box.setWindowTitle("Determine First Player")
         box.setText("Roll to determine who goes first.")
         roll_btn = box.addButton("Roll", QMessageBox.AcceptRole)
         box.addButton("Cancel", QMessageBox.RejectRole)
         box.exec()
-        if box.clickedButton() is roll_btn:
-            winner, _rolls = self.controller.perform_first_player_roll()
-            wn = self.game.players[winner].name
-            choose = QMessageBox(self.w)
+        if box.clickedButton() is not roll_btn:
+            return
+        winner, _rolls = self.controller.perform_first_player_roll()
+        wn = self.game.players[winner].name
+        # If AI (non-player0) wins the roll, it always auto-passes (player 0 goes first).
+        if winner != 0 and winner in getattr(self.controller, 'ai_controllers', {}):
+            starter = (winner + 1) % len(self.game.players)
+            self._log(f"[ROLL] {wn} (AI) wins roll, auto-passes. {self.game.players[starter].name} starts.")
+            self.finalize_start_after_roll(starter)
+            return
+        # Human (player 0) wins: offer choice to go first or pass.
+        if winner == 0:
+            choose = QMessageBox(host)
             choose.setWindowTitle("Roll Result")
-            choose.setText(f"{wn} wins the roll.\nChoose turn order.")
+            choose.setText(f"You win the roll.\nChoose turn order.")
             go_first = choose.addButton("Go First", QMessageBox.AcceptRole)
             pass_btn = choose.addButton("Pass", QMessageBox.DestructiveRole)
             choose.exec()
             starter = (winner + 1) % len(self.game.players) if choose.clickedButton() is pass_btn else winner
+            self._log(f"[ROLL] Player wins roll and chooses {'to pass' if starter != winner else 'to go first'}.")
             self.finalize_start_after_roll(starter)
+            return
+        # Non-player0 human winner (if supported): that winner chooses; losing player0 gets no dialog.
+        choose = QMessageBox(host)
+        choose.setWindowTitle("Roll Result")
+        choose.setText(f"{wn} wins the roll.\nWinner chooses turn order.")
+        go_first = choose.addButton("Go First", QMessageBox.AcceptRole)
+        pass_btn = choose.addButton("Pass", QMessageBox.DestructiveRole)
+        choose.exec()
+        starter = (winner + 1) % len(self.game.players) if choose.clickedButton() is pass_btn else winner
+        self._log(f"[ROLL] {wn} wins roll and chooses {'to pass' if starter != winner else 'to go first'}.")
+        self.finalize_start_after_roll(starter)
 
     # Turn / phases
-    def advance_phase(self):
+    def advance_phase(self):  # already mapped by earlier changes
         if not (self.controller.in_game and self.controller.first_player_decided):
             return
-        self.controller.advance_phase()
+        self.controller.advance_step()   # ensure strict step advance
         self._phase_ui()
 
     def ai_tick(self):
         if not (self.controller.in_game and self.controller.first_player_decided):
             return
+        play_area = getattr(self.board_window, 'play_area', None)
         self.controller.tick(lambda: (
-            hasattr(self.w, 'play_area') and getattr(self.w.play_area, 'refresh_board', lambda: None)()
+            play_area and getattr(play_area, 'refresh_board', lambda: None)()
         ))
         self._phase_ui()
 
@@ -184,16 +232,20 @@ class GameAppAPI:
 
     # Debug
     def toggle_debug_window(self):
+        host = self.board_window or self.w
         try:
             from tools.game_debug_tests import GameDebugWindow
         except Exception as ex:
-            QMessageBox.information(self.w, "Debug Window", f"Unavailable: {ex}")
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(host, "Debug Window", f"Unavailable: {ex}")
             return
         if self._debug_win and self._debug_win.isVisible():
             self._debug_win.close()
             self._debug_win = None
         else:
-            self._debug_win = GameDebugWindow(self.game, getattr(self.w, 'play_area', None), self.w)
+            play_area = getattr(self.board_window, 'play_area', None)
+            # CHANGED: pass main_window explicitly (self.w) plus board_window
+            self._debug_win = GameDebugWindow(self.game, play_area, self.w, board_window=self.board_window)
             self._debug_win.show()
 
     # Keys
@@ -222,6 +274,11 @@ class GameAppAPI:
                 self._debug_win.close()
         except Exception:
             pass
+        if self.board_window:
+            try:
+                self.board_window.close()
+            except Exception:
+                pass
 
     # Internal helpers
     def _rebuild_game_with_specs(self, specs):
@@ -252,9 +309,11 @@ class GameAppAPI:
         is_multi = len(self.game.players) > 2
         human = self.game.players[0] if self.game.players else None
         if human:
+            self._ensure_game_window()                 # ADDED
+            host = self.board_window or self.w         # ADDED
             while True:
                 hand_names = ", ".join(c.name for c in human.hand)
-                box = QMessageBox(self.w)
+                box = QMessageBox(host)            # CHANGED parent
                 box.setWindowTitle("Opening Hand")
                 box.setText(
                     f"Opening Hand ({len(human.hand)}):\n{hand_names or '(empty)'}\n\n"
@@ -284,8 +343,23 @@ class GameAppAPI:
         setattr(self.game, '_opening_hands_deferred', False)
 
     def _phase_ui(self):
-        if hasattr(self.w, '_update_phase_ui'):
-            self.w._update_phase_ui()
+        """
+        Lightweight UI sync: any object with 'phase_lbl' or 'phase_label'
+        will be updated directly; no legacy phase modules used.
+        """
+        host = getattr(self, 'board_window', None) or self.w
+        txt = f"{self.controller.phase}"
+        if hasattr(self.controller, 'step') and self.controller.step != self.controller.phase:
+            txt = f"{self.controller.phase} / {self.controller.step}"
+        ap_name = getattr(self.controller, 'active_player_name', "—")
+        txt = f"{txt}  Active: {ap_name}"
+        for attr in ('phase_lbl', 'phase_label'):
+            lbl = getattr(host, attr, None)
+            if lbl:
+                try:
+                    lbl.setText(txt)
+                except Exception:
+                    pass
 
     def _sync_lobby(self, active: bool):
         if hasattr(self.w, 'lobby_widget') and hasattr(self.w.lobby_widget, 'sync_pending_controls'):

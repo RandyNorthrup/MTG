@@ -1,19 +1,26 @@
 from PySide6.QtWidgets import QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QMessageBox, QLineEdit, QTabWidget, QPlainTextEdit
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QEvent
 
 class GameDebugWindow(QWidget):
     """
     Lightweight in-process debug utility.
-    All operations are best-effort and wrapped with guards so failures
-    do not crash the app.
+    Now reports both Main window size and (detached) Board window size.
     """
-    def __init__(self, game, play_area, main_window):
+    def __init__(self, game, play_area, main_window, board_window=None):
         super().__init__()
         self.setWindowTitle("Game Debug")
         self.game = game
         self.play_area = play_area
-        self.main_window = main_window
-        self.controller = getattr(main_window, 'controller', None)
+        self.main_window = main_window          # ensure real main window
+        self.board_window = board_window
+        self._last_board_size = None
+        self.controller = getattr(main_window, 'controller', getattr(main_window, 'api', None) and getattr(main_window.api, 'controller', None))
+
+        # Install event filters for resize/close tracking
+        if self.main_window:
+            self.main_window.installEventFilter(self)
+        if self.board_window:
+            self.board_window.installEventFilter(self)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8,8,8,8)
@@ -23,6 +30,15 @@ class GameDebugWindow(QWidget):
         self.info_lbl.setStyleSheet("font:10pt monospace;")
         self.info_lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
         root.addWidget(self.info_lbl)
+
+        # Added: window size labels
+        self.main_size_lbl = QLabel(self._main_size_text())
+        self.main_size_lbl.setStyleSheet("font:9pt monospace;color:#5a5;")
+        root.addWidget(self.main_size_lbl)
+
+        self.board_size_lbl = QLabel(self._board_size_text())
+        self.board_size_lbl.setStyleSheet("font:9pt monospace;color:#66c;")
+        root.addWidget(self.board_size_lbl)
 
         # Row 1 – flow
         row1 = QHBoxLayout()
@@ -47,16 +63,11 @@ class GameDebugWindow(QWidget):
         row3.addStretch(1)
         root.addLayout(row3)
 
-        # --- NEW: window size display row ---
-        size_row = QHBoxLayout()
-        self.main_size_box = QLineEdit(); self.main_size_box.setReadOnly(True)
-        self.game_size_box = QLineEdit(); self.game_size_box.setReadOnly(True)
-        for w, lab in [(self.main_size_box, "Main"), (self.game_size_box, "Game")]:
-            w.setFixedWidth(150)
-            size_row.addWidget(QLabel(lab+":"), 0)
-            size_row.addWidget(w, 0)
-        size_row.addStretch(1)
-        root.addLayout(size_row)
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setFixedHeight(140)
+        self.log_box.setStyleSheet("font:10pt Consolas,monospace;")
+        root.addWidget(self.log_box)
 
         # --- NEW: tabs for Log / Verbose ---
         self._tabs = QTabWidget()
@@ -85,11 +96,46 @@ class GameDebugWindow(QWidget):
 
         # Periodic info refresh
         self._refresh_timer = QTimer(self)
-        self._refresh_timer.timeout.connect(self._update_info)
+        self._refresh_timer.timeout.connect(self._periodic_refresh)
         self._refresh_timer.start(1200)
 
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)  # ADDED keep on top
-        self._update_window_sizes()  # ADDED initial size fill
+        self._update_size_labels()  # ADDED initial size fill
+
+    # --- Size text helpers (ADDED) ---
+    def _main_size_text(self):
+        if not self.main_window:
+            return "Main Window: (unavailable)"
+        sz = self.main_window.size()
+        return f"Main Window: {sz.width()} x {sz.height()}"
+
+    def _board_size_text(self):
+        if self.board_window and self.board_window.isVisible():
+            sz = self.board_window.size()
+            self._last_board_size = (sz.width(), sz.height())
+            return f"Board Window: {sz.width()} x {sz.height()}"
+        if self._last_board_size:
+            w, h = self._last_board_size
+            return f"Board Window: (closed, last {w} x {h})"
+        return "Board Window: (closed)"
+
+    def _update_size_labels(self):
+        if self.main_size_lbl:
+            self.main_size_lbl.setText(self._main_size_text())
+        if self.board_size_lbl:
+            self.board_size_lbl.setText(self._board_size_text())
+
+    # --- Event filter to catch resize / close (ADDED) ---
+    def eventFilter(self, obj, ev):
+        if ev.type() in (QEvent.Resize, QEvent.Close):
+            if obj is self.main_window or obj is self.board_window:
+                self._update_size_labels()
+        return super().eventFilter(obj, ev)
+
+    # --- Periodic combined refresh (ADDED) ---
+    def _periodic_refresh(self):
+        self.info_lbl.setText(self._build_info_text())
+        self._update_size_labels()
 
     # --- UI helpers ---
     def _mk_btn(self, text, slot):
@@ -101,9 +147,9 @@ class GameDebugWindow(QWidget):
         self.log_box.append(msg)
 
     def _update_info(self):
+        # retained for any direct calls (kept backward compat)
         self.info_lbl.setText(self._build_info_text())
-        self._update_window_sizes()
-        self._refresh_verbose(auto=True)
+        self._update_size_labels()
 
     def _build_info_text(self):
         try:
@@ -145,6 +191,22 @@ class GameDebugWindow(QWidget):
                 self.game_size_box.setText("(closed)")
         except Exception:
             pass
+
+    # --- ADDED helpers for board window size ---
+    def _board_size_text(self):
+        if not self.board_window:
+            return "Board Size: (no board window)"
+        sz = self.board_window.size()
+        return f"Board Size: {sz.width()} x {sz.height()}"
+
+    def _update_board_size_label(self):
+        if self.board_size_lbl:
+            self.board_size_lbl.setText(self._board_size_text())
+
+    def eventFilter(self, obj, ev):  # ADDED: react to board window resize
+        if obj is self.board_window and ev.type() == QEvent.Resize:
+            self._update_board_size_label()
+        return super().eventFilter(obj, ev)
 
     # --- NEW safe helpers (placed near other helpers / before _build_verbose_dump) ---
     def _safe_len(self, obj):

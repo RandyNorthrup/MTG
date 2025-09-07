@@ -1,8 +1,7 @@
 import os
-import time
-import tempfile
-import threading
 import shutil
+import threading
+import time
 import urllib.request
 from typing import Dict, Tuple, Optional
 
@@ -178,4 +177,5 @@ def teardown_cache():
         cleanup_cache(force=True)
         shutil.rmtree(SESSION_DIR, ignore_errors=True)
     except Exception:
+        pass
         pass

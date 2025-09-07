@@ -65,3 +65,8 @@ image_cache/
 
 # Documentation
 docs/
+
+# Runtime caches & generated IDs
+data/game_ids.txt
+data/cache/
+image_cache/
