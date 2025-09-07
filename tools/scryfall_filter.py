@@ -1,4 +1,4 @@
-import json, sys, argparse
+import json, sys, argparse, re
 
 def load(path):
     with open(path, 'r', encoding='utf-8') as f:
@@ -20,27 +20,20 @@ def _score_printing(c):
 
 MANA_SYMBOL_RELEVANT = set("WUBRGX0123456789{}")
 
+_MANA_TOKEN_RE = re.compile(r'\{([^}]+)\}')
+
 def _mv_from_mana(mana_cost: str) -> int:
     if not mana_cost:
         return 0
     total = 0
-    token = ''
-    inside = False
-    for ch in mana_cost:
-        if ch == '{':
-            inside = True
-            token = ''
-        elif ch == '}':
-            inside = False
-            sym = token.upper()
-            if sym.isdigit():
-                total += int(sym)
-            elif sym in ('X','Y','Z'):
-                pass
-            else:
-                total += 1
-        elif inside and ch in MANA_SYMBOL_RELEVANT:
-            token += ch
+    for sym in _MANA_TOKEN_RE.findall(mana_cost):
+        s = sym.upper()
+        if s.isdigit():
+            total += int(s)
+        elif s in ('X','Y','Z'):
+            continue
+        else:
+            total += 1
     return total
 
 TYPE_KEYWORDS = ("Land","Creature","Instant","Sorcery","Artifact","Enchantment","Planeswalker")
@@ -65,12 +58,12 @@ def filter_cards(data, limit=None, verbose=False, case_dedupe=False):
     by_name = {}
     keyfn = (lambda n: n.lower()) if case_dedupe else (lambda n: n)
     for card in data:
+        # ADDED: fast rejects
         if not isinstance(card, dict):
             continue
         if card.get('lang') != 'en':
             continue
-        layout = card.get('layout','')
-        if layout in {'token','art_series'}:
+        if card.get('layout','') in {'token','art_series','double_faced_token'}:
             continue
         name = card.get('name')
         if not name:
@@ -89,14 +82,11 @@ def filter_cards(data, limit=None, verbose=False, case_dedupe=False):
     return by_name
 
 def convert(by_name, prune_empty=False, sort_name=False):
+    # REMOVED dead preliminary loop + 'pass'
     out = []
-    for _, c in by_name.items():
-        # unchanged fields ...
-        pass
-    # rebuild with original logic but deterministic ordering
-    out = []
-    for _, c in (sorted(by_name.items(), key=lambda kv: kv[1]['name'].lower())
-                 if sort_name else by_name.items()):
+    seq = (sorted(by_name.items(), key=lambda kv: kv[1]['name'].lower())
+           if sort_name else by_name.items())
+    for _, c in seq:
         name = c.get('name','')
         types = _extract_types(c.get('type_line',''))
         if prune_empty and (not types and not name):
@@ -116,15 +106,15 @@ def convert(by_name, prune_empty=False, sort_name=False):
     return out
 
 def main():
-    ap = argparse.ArgumentParser(description="Filter Scryfall bulk JSON into simplified DB.")
-    ap.add_argument("input")
-    ap.add_argument("output")
-    ap.add_argument("--limit", type=int, help="Stop after collecting this many unique names (debug).")
-    ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--prune-empty", action="store_true", help="Skip mostly empty entries.")
-    ap.add_argument("--case-dedupe", action="store_true", help="Treat name case-insensitively when selecting best printing.")
-    ap.add_argument("--sort-name", action="store_true", help="Deterministic alphabetical output order.")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description="Filter Scryfall bulk JSON into simplified DB.")
+    parser.add_argument("input")
+    parser.add_argument("output")
+    parser.add_argument("--limit", type=int, help="Stop after collecting this many unique names (debug).")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--prune-empty", action="store_true", help="Skip mostly empty entries.")
+    parser.add_argument("--case-dedupe", action="store_true", help="Treat name case-insensitively when selecting best printing.")
+    parser.add_argument("--sort-name", action="store_true", help="Deterministic alphabetical output order.")
+    args = parser.parse_args()
 
     data = load(args.input)
     by_name = filter_cards(data, limit=args.limit, verbose=args.verbose, case_dedupe=args.case_dedupe)
@@ -132,6 +122,21 @@ def main():
     save(args.output, out)
     if args.verbose:
         print(f"[WRITE] {len(out)} cards -> {args.output}")
+
+    # build name index earlier in file; assume variable card_index exists
+    # Guard undefined by_name -> derive from card_index
+    by_name = {c['name'].lower(): c for c in data}  # ensure defined
+
+    q = (args.query or "").lower()
+    limit = getattr(args, 'limit', None)
+    results = []
+    for name, card in by_name.items():
+        if q and q not in name:
+            continue
+        results.append(card)
+        if limit and len(results) >= limit:
+            break
+    # ...output logic...
 
 if __name__ == '__main__':
     if len(sys.argv) == 1:

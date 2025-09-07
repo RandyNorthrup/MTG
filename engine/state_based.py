@@ -1,33 +1,33 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 if TYPE_CHECKING:
     from .game_state import GameState
 
 class StateBasedActionEngine:
-    def __init__(self, game: 'GameState'):
-        self.game = game
-
-    def check(self) -> bool:
-        changed = False
-        # Lethal damage / 0 toughness
-        for pl in self.game.players:
-            new_bf = []
-            for perm in getattr(pl, 'battlefield', []):
-                card = getattr(perm, 'card', perm)
-                if getattr(perm, 'damage', 0) >= getattr(card, 'toughness', 999999):
-                    self._to_grave(pl, perm); changed = True; continue
-                if getattr(card, 'toughness', 1) <= 0:
-                    self._to_grave(pl, perm); changed = True; continue
-                new_bf.append(perm)
-            pl.battlefield = new_bf
-            if pl.life <= 0 and not getattr(self.game, 'winner', None):
-                self.game.winner = next((o for o in self.game.players if o is not pl), None)
-                changed = True
-        return changed
-
-    def cleanup_eot(self):
-        for pl in self.game.players:
-            for perm in getattr(pl, 'battlefield', []):
+    """
+    Minimal state-based action processor:
+      - Players with life <= 0 lose
+      - Player forced to draw from empty library loses
+      - (Stub) Commander damage check hook
+    """
+    @staticmethod
+    def run(game: 'GameState'):
+        to_eliminate: List[int] = []
+        for pl in list(game.players):
+            try:
+                if pl.life <= 0:
+                    to_eliminate.append(pl.player_id)
+                if getattr(pl, '_drew_from_empty', False):
+                    to_eliminate.append(pl.player_id)
+                # Commander damage rule placeholder (903.10) – integrate when tracking implemented
+            except Exception:
+                continue
+        if to_eliminate:
+            for pid in sorted(set(to_eliminate), reverse=True):
+                try:
+                    game.player_lost(pid, reason="STATE_BASED")
+                except Exception:
+                    pass
                 if hasattr(perm, 'damage'):
                     perm.damage = 0
 

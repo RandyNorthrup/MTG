@@ -4,8 +4,7 @@ from .ability import Ability, TriggeredAbility, StaticKeywordAbility
 from .ability import TriggerEvent  # NEW
 from .ability import ActivatedAbility  # NEW
 from .ability import StaticBuffAbility  # NEW
-from .mana import parse_mana_cost, ManaPool, GENERIC_KEY  # reuse mana parsing
-
+from engine.mana import ManaPool, parse_mana_cost  # added parse_mana_cost for cost parsing
 # Regex patterns (very small subset)
 _PAT_ETB = re.compile(r'^\s*when\s+.*?enters the battlefield,\s*(.+)$', re.IGNORECASE)
 _PAT_ATTACK = re.compile(r'^\s*whenever\s+.*?attacks,\s*(.+)$', re.IGNORECASE)
@@ -244,7 +243,7 @@ class RulesEngine:
 
     def _resolve_activation(self, controller_id, card, ability: ActivatedAbility, target_card):
         player = self.game.players[controller_id]
-        pool = getattr(player,'mana_pool',None)
+        pool = getattr(player, 'mana_pool', None)
         if not pool:
             player.mana_pool = ManaPool()
             pool = player.mana_pool
@@ -252,12 +251,15 @@ class RulesEngine:
             return
         pool.pay(ability.mana_cost)
         perm = self._find_permanent(card.id)
-        if ability.tap_cost and perm and not getattr(perm,'tapped',False):
-            self.game.tap_for_mana(controller_id, perm, produce_mana=False)  # reuse tap (flag prevents mana add)
-        # Queue a synthetic trigger event to process later
-        fake = TriggeredAbility(kind='triggered', raw_text=ability.raw_text,
-                                trigger='ACTIVATED', effect_text=ability.effect_text)
-        self._enqueue(card, fake, {"event":"ACTIVATED","target":getattr(target_card,'name',None)})
+        if ability.tap_cost and perm and not getattr(perm, 'tapped', False):
+            # reuse existing tap routine without generating mana
+            self.game.tap_for_mana(controller_id, perm, produce_mana=False)
+        fake = TriggeredAbility(kind='triggered',
+                                raw_text=ability.raw_text,
+                                trigger='ACTIVATED',
+                                effect_text=ability.effect_text)
+        self._enqueue(card, fake, {"event": "ACTIVATED",
+                                   "target": getattr(target_card, 'name', None)})
 
     # --- Internal helper stubs ---
     def _find_card(self, cid):
