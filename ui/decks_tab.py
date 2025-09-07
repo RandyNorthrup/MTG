@@ -8,11 +8,10 @@ from image_cache import ensure_card_image
 
 def _load_card_db():
     """
-    Late-load main.load_card_db to avoid circular import during module import.
+    Load card DB via engine.card_db (main no longer hosts this function).
     """
-    from importlib import import_module
-    m = import_module('main')
-    return m.load_card_db()
+    from engine.card_db import load_card_db as _lcd
+    return _lcd()
 
 class DecksTabManager:
     def __init__(self, main_win):
@@ -136,7 +135,7 @@ class DecksTabManager:
 
     # Internal copied logic
     def _init_deck_builder_state(self):
-        _load_card_db()  # ensure loaded
+        _load_card_db()  # ensure loaded (now from engine.card_db)
         self.deck_builder_initialized = True
 
     def _reset_filters(self):
@@ -153,7 +152,7 @@ class DecksTabManager:
         term = self.card_search_box.text().strip().lower()
         colors = {c for c,cb in self.color_checks.items() if cb.isChecked()}
         types = {t for t,cb in self.type_checks.items() if cb.isChecked()}
-        by_name_lower = _load_card_db()[1]
+        by_name_lower = _load_card_db()[1]   # updated source
         items = []
         for name, card in by_name_lower.items():
             if term and term not in name: continue
@@ -253,4 +252,5 @@ class DecksTabManager:
 
     def _clear_commander(self):
         self.deck_commander = None
+        self._refresh_lists(); self._update_summary()
         self._refresh_lists(); self._update_summary()
