@@ -23,6 +23,9 @@ data/cards/card_db_full.json
 data/cards/input_bulk_default_cards.json
 data/cards/*.zip
 
+# Cache (runtime)
+cache/
+
 # Type / test cache
 .pytest_cache/
 .mypy_cache/

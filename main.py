@@ -17,6 +17,16 @@ from engine.mana import parse_mana_cost  # removed GENERIC_KEY (unused)
 from engine.lobby import LobbyServer  # NEW
 from engine.turn_manager import TurnManager  # NEW
 
+try:
+    from mtgsdk import Card as MTGSDKCard  # type: ignore  # suppress pylance missing import
+    _HAVE_MTGSDK = True
+except Exception:
+    _HAVE_MTGSDK = False
+
+# --- added: ensure globals exist before use ---
+_SDK_ONLINE = False          # set in main() if flag provided
+_SDK_INJECT_CACHE = {}       # injected SDK-fetched cards
+
 _NORMALIZE_RE = re.compile(r'[^a-z0-9]+')
 def _normalize_name(s: str) -> str:
     return _NORMALIZE_RE.sub(' ', s.lower()).strip()
@@ -52,6 +62,69 @@ def get_card_name_list():
     by_id, *_ = load_card_db()
     return sorted({c['name'] for c in by_id.values()})
 
+def _sdk_fetch_card(name: str):
+    """
+    Online fallback: fetch first matching exact-name card via mtgsdk.
+    Returns normalized card dict or raises KeyError.
+    """
+    if not (_SDK_ONLINE and _HAVE_MTGSDK):
+        raise KeyError(name)
+    # mtgsdk search (exact first; fallback case-insensitive)
+    q = MTGSDKCard.where(name=name).all()
+    if not q:
+        q = MTGSDKCard.where().where(page=1).all()  # minimal safeguard (unlikely to help)
+    # pick best exact (case-insensitive)
+    pick = None
+    for c in q:
+        if c.name.lower() == name.lower():
+            pick = c
+            break
+    if not pick and q:
+        pick = q[0]
+    if not pick:
+        raise KeyError(name)
+    # Normalize fields expected by existing code
+    cid = pick.id or pick.multiverse_id or pick.set + ":" + pick.number
+    types = []
+    if pick.type:
+        # pick.type example: "Creature — Elf Druid"
+        main = pick.type.split('—')[0].strip()
+        parts = main.split()
+        for t in parts:
+            types.append(t)
+    mana_cost = 0
+    mana_cost_str = pick.mana_cost or ""
+    # crude parse generic number
+    m = re.findall(r'\{(\d+)\}', mana_cost_str)
+    if m:
+        mana_cost += sum(int(x) for x in m)
+    # count colored symbols as 1
+    mana_cost += len(re.findall(r'\{[WUBRG]\}', mana_cost_str))
+    card_dict = {
+        'id': cid,
+        'name': pick.name,
+        'types': types or ['Card'],
+        'mana_cost': mana_cost,
+        'mana_cost_str': mana_cost_str,
+        'power': None,
+        'toughness': None,
+        'text': pick.text or "",
+        'color_identity': pick.color_identity or []
+    }
+    return card_dict
+
+def _inject_sdk_card(c):
+    """Insert fetched card into runtime caches so normal flow can use it."""
+    global _CARD_DB_CACHE, _CARD_NAME_LIST
+    if _CARD_DB_CACHE is None:
+        return
+    by_id, by_name_lower, by_norm, path = _CARD_DB_CACHE
+    by_id[c['id']] = c
+    by_name_lower[c['name'].lower()] = c
+    by_norm[_normalize_name(c['name'])] = c
+    _SDK_INJECT_CACHE[c['id']] = c
+    _CARD_NAME_LIST = sorted(by_name_lower.keys())
+
 def _resolve_entry(entry: str, by_id, by_name_lower, by_norm, deck_path, db_path):
     orig = entry
     if entry in by_id:
@@ -63,11 +136,17 @@ def _resolve_entry(entry: str, by_id, by_name_lower, by_norm, deck_path, db_path
     c = by_norm.get(_normalize_name(entry))
     if c:
         return c
-    # NEW: attempt unique case-insensitive startswith match (cheap heuristic)
     matches = [v for k, v in by_name_lower.items() if k.startswith(low)]
     if len(matches) == 1:
         return matches[0]
-    raise KeyError(f"Card '{orig}' not found (deck={deck_path} db={db_path})")
+    # NEW: SDK fallback
+    try:
+        fetched = _sdk_fetch_card(entry)
+        _inject_sdk_card(fetched)
+        return fetched
+    except KeyError:
+        pass
+    raise KeyError(f"Card '{orig}' not found (deck={deck_path} db={db_path}{' sdk' if _SDK_ONLINE else ''})")
 
 def _build_cards(entries, commander_name, *, by_id, by_name_lower, by_norm, db_path_used, deck_path, owner_id):
     from engine.card_engine import Card
@@ -125,6 +204,8 @@ def parse_args():
                     help='Add player deck (optional :AI suffix)')
     ap.add_argument('--no-ai', action='store_true')
     ap.add_argument('--no-log', action='store_true')
+    ap.add_argument('--sdk-online', action='store_true',
+                    help='Enable mtg-sdk-python online lookup for missing cards')
     return ap.parse_args()
 
 def _deck_specs_from_args(arg_list):
@@ -405,7 +486,9 @@ class MainWindow(QMainWindow):
         self.ai_controllers = build_ai_controllers(ai_ids)
         enhance_ai_controllers(game, self.ai_controllers)
         self.logging_enabled = not (args and args.no_log)
-        self.play_area = PlayArea(game)
+        self.play_area = PlayArea(game)  # direct (fallback removed)
+        if hasattr(self.play_area, 'enable_drag_and_drop'):
+            self.play_area.enable_drag_and_drop()
         # NEW: ensure TurnManager attached (idempotent)
         if not hasattr(self.game, 'turn_manager'):
             try:
@@ -625,7 +708,7 @@ class MainWindow(QMainWindow):
             specs.append((p.name, p.deck_path, False if p.name == self._local_player_name else True))
         new_state, ai_ids = new_game(specs, ai_enabled=True)
         self.game = new_state
-        self.play_area.game = self.game
+        self.play_area.set_game(self.game)  # rely on real PlayArea API
         self.ai_controllers = build_ai_controllers(ai_ids)
         enhance_ai_controllers(self.game, self.ai_controllers)
         self._in_game = True
@@ -914,9 +997,11 @@ class MainWindow(QMainWindow):
             self.play_area.update()
             return
         # Basic AI only for its controller & relevant phases
-        if self.game.active_player in self.ai_controllers and self.game.phase in ('MAIN1','COMBAT_DECLARE'):
+        ap = self.game.active_player
+        phase = self.game.phase
+        if ap in self.ai_controllers and phase in ('MAIN1', 'COMBAT_DECLARE'):
             try:
-                self.ai_controllers[self.game.active_player].take_turn(self.game)
+                self.ai_controllers[ap].take_turn(self.game)
             except Exception as ex:
                 print(f"[AI][ERR] {ex}")
         if hasattr(self.game, 'turn_manager'):
@@ -926,6 +1011,8 @@ class MainWindow(QMainWindow):
                 if self.logging_enabled:
                     print(f"[TURNMGR][ERR] {ex}")
         self.play_area.update()
+        if hasattr(self.play_area, 'refresh_board'):
+            self.play_area.refresh_board()  # keep widgets synced to model
         # NEW: resolve any queued triggered abilities
         if hasattr(self.game, 'rules_engine'):
             self.game.rules_engine.process_trigger_queue()
@@ -1037,18 +1124,17 @@ class MainWindow(QMainWindow):
         if not os.path.exists(path):
             QMessageBox.warning(self,"Reload","custom_deck.txt not found. Save one in Decks tab.")
             return
-        # ...existing code but replace custom_deck.json path usage...
+        # ...existing code pre new_game...
         spec = [(self.game.players[0].name, path, 0 in self.ai_controllers)]
         for p in self.game.players[1:]:
             # keep their original source if still .txt else fallback
             src = getattr(p,'source_path', os.path.join('data','decks','draconic_domination.txt'))
             spec.append((p.name, src, p.player_id in self.ai_controllers))
         try:
-            new_state, ai_ids = new_game(spec, ai_enabled=True)
+            self.game, ai_ids = new_game(spec, ai_enabled=True)
         except Exception as ex:
             QMessageBox.critical(self,"Reload Failed", str(ex)); return
-        self.game = new_state
-        self.play_area.game = self.game
+        self.play_area.set_game(self.game)
         self.ai_controllers = build_ai_controllers(ai_ids)
         QMessageBox.information(self,"Reload","Player 0 deck reloaded.")
         self._log_phase()
@@ -1078,7 +1164,7 @@ def parse_deck_txt_file(path: str):
     last_name_candidate = None
     if not os.path.exists(path):
         raise FileNotFoundError(path)
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, 'r', encoding='utf-8-sig') as f:
         for raw in f:
             line = raw.strip()
             if not line or line.startswith('#'):
@@ -1087,15 +1173,17 @@ def parse_deck_txt_file(path: str):
             if low.startswith('sideboard'):
                 break
             if low.startswith('commander:'):
-                commander = line.split(':',1)[1].strip()
+                cand = line.split(':',1)[1].strip()
+                if cand:
+                    commander = cand
                 continue
             m = re.match(r'^(\d+)\s+(.+)$', line)
             if m:
                 ct = int(m.group(1))
                 name = m.group(2).strip()
-                if ct < 1: 
+                if ct <= 0 or not name:
                     continue
-                entries.extend([name]*ct)
+                entries.extend([name] * ct)
                 last_name_candidate = name
             else:
                 entries.append(line)
@@ -1119,7 +1207,11 @@ def save_deck_txt(path: str, commander_name: str, card_names: list[str]):
     print(f"[DECK][SAVE] {path}")
 
 def main():
+    global _SDK_ONLINE
     args = parse_args()
+    _SDK_ONLINE = bool(getattr(args, 'sdk_online', False) and _HAVE_MTGSDK)
+    if getattr(args, 'sdk_online', False) and not _HAVE_MTGSDK:
+        print("[SDK] mtg-sdk-python not installed; ignoring --sdk-online (pip install mtgsdk).")
     specs = _deck_specs_from_args(getattr(args, 'deck', None))
     game, ai_ids = new_game(specs if specs else None, ai_enabled=not args.no_ai)
     app = QApplication(sys.argv)

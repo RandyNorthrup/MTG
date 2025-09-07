@@ -1,61 +1,61 @@
 # MTG Commander (Prototype)
 
 ## Features
-- 1v1 Commander: 40 life, command zone & tax, commander damage
-- Zones: Library / Hand / Battlefield / Graveyard / Exile / Command
-- Turn engine: UNTAP → UPKEEP → DRAW → MAIN1 → (COMBAT: Begin / Declare Attackers / Declare Blockers / Damage / End) → MAIN2 → END → CLEANUP (auto‑chains through non‑priority steps)
-- Basic AI: plays lands, casts simple permanents, attacks
-- Qt UI: tabbed (Home / Decks / Play + Lobby), integrated deck editor
-- Tools: Scryfall filter, text deck (*.txt) import
-
-## Quick Run
-```bash
-python -m venv .venv
-# activate env
-pip install -r requirements.txt
-python main.py
-```
-
-## Full Card Database (Scryfall)
-```bash
-python tools/scryfall_filter.py data/raw/default-cards.json data/cards/card_db_full.json --verbose
-```
-
-## Deck Builder
-Press D in app or edit a text deck (e.g. data/decks/custom_deck.txt) then press R to reload.
+- Commander rules baseline (40 life, commander tax/damage)
+- Zones & turn structure
+- Basic AI (goldfish style)
+- Qt UI (Home / Decks / Lobby+Play)
+- Embedded text deck editor (.txt)
+- Scryfall filter tool
 
 ## Shortcuts
-Space: Resolve / advance phase
-A: Declare attackers (player 0)
-D: Deck builder
-R: Reload custom_deck.txt
-S: Toggle scoreboard
-L: Toggle phase logging
-H: Help
-ESC: Quit
+SPACE advance / resolve  
+A declare attackers (player 0)  
+R reload custom_deck.txt  
+D deck editor info popup  
+S toggle scoreboard  
+L toggle phase logging  
+H help  
+ESC quit  
 
 ## Troubleshooting
-- Missing cards: regenerate card_db_full.json
-- Phase stuck: ensure game_state.ensure_progress exists (auto steps)  
-- Empty library draw: current simplified rules = loss check on next state update
+- Missing images: first load will fetch/cache.
+- Card not found: regenerate DB or use --sdk-online.
+- Stuck phase: SPACE; check console.
+- Mulligan prompt only with 2+ players.
+
+## Performance Tips
+- Use --no-log to reduce console noise.
+- Keep deck DB trimmed (optional filtered DB).
+- Limit image prefetch if on HDD.
 
 ## Contributing
-Submit PRs with concise diffs; keep large generated JSON out of repo (.gitignore covers).
-- H: Help popup
-- L: Toggle phase logging
-- ESC / Ctrl+Q: Quit
+Small focused PRs only (engine/UI separation). Avoid committing large generated JSON. Use .txt decks (no legacy JSON).
 
-## Deck Editing Flow
-1. Open deckbuilder (D).
-2. Search & add (left click), set commander (right click).
-3. Save (writes data/decks/custom_deck.json).
-4. Press R in Play tab to reload.
+## Goals
+Playable Commander sandbox for prototyping & AI experiments.
+A declare attackers (active player 0)  
+R reload custom_deck.txt  
+D deck editor info popup  
+S toggle scoreboard  
+L toggle phase logging  
+H help  
+ESC quit  
 
-## Project Goals
-- Playable Commander format (validation & flow) – implemented (baseline)
-- Built-in deck editor (text + GUI) – Qt dialog
-- Tabbed UI (Home / Decks / Play) – via QTabWidget
-- Minimal AI opponent – unchanged logic
+## Troubleshooting
+- Missing images: first load lazy-downloads (ensure network if using SDK fallback).
+- Card not found: regenerate DB or use --sdk-online.
+- Stuck phase: press SPACE; check console for exceptions.
+- Mulligan prompt only appears with 2+ players.
+
+## Contributing
+Small, focused PRs. Omit large generated JSON (see .gitignore). Use text decks (.txt), not legacy JSON.
+
+## Goals
+Baseline playable Commander sandbox with extensible engine, simple AI, and deck iteration workflow.
+
+## Performance Tips
+Use --no-log for quieter loop. Limit deck size / image prefetch on low-end machines.
 - Multiplayer-ready architecture – engine separation retained
 
 ## Troubleshooting

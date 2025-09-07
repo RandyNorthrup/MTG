@@ -48,7 +48,8 @@ TYPE_KEYWORDS = ("Land","Creature","Instant","Sorcery","Artifact","Enchantment",
 def _extract_types(type_line: str):
     if not type_line:
         return []
-    return [k for k in TYPE_KEYWORDS if k in type_line]
+    tl = type_line.lower()
+    return [k for k in TYPE_KEYWORDS if k.lower() in tl]
 
 def _int_or_none(v):
     try:
@@ -83,24 +84,30 @@ def filter_cards(data, limit=None, verbose=False, case_dedupe=False):
             if limit and len(by_name) >= limit:
                 break
     if verbose:
-        print(f"[FILTER] Selected {len(by_name)} unique names.")
+        total = sum(1 for c in data if isinstance(c, dict))
+        print(f"[FILTER] Scanned={total} kept={len(by_name)}")
     return by_name
 
-def convert(by_name, prune_empty=False):
+def convert(by_name, prune_empty=False, sort_name=False):
     out = []
-    append = out.append
     for _, c in by_name.items():
+        # unchanged fields ...
+        pass
+    # rebuild with original logic but deterministic ordering
+    out = []
+    for _, c in (sorted(by_name.items(), key=lambda kv: kv[1]['name'].lower())
+                 if sort_name else by_name.items()):
         name = c.get('name','')
         types = _extract_types(c.get('type_line',''))
         if prune_empty and (not types and not name):
             continue
         raw_cost_str = c.get('mana_cost','') or ''
-        append({
+        out.append({
             "id": c.get('id', name.replace(' ','_').lower()),
             "name": name,
             "types": types or ["Other"],
-            "mana_cost": _mv_from_mana(raw_cost_str),   # existing numeric shortcut
-            "mana_cost_str": raw_cost_str,              # NEW: keep original string
+            "mana_cost": _mv_from_mana(raw_cost_str),
+            "mana_cost_str": raw_cost_str,
             "power": _int_or_none(c.get('power')),
             "toughness": _int_or_none(c.get('toughness')),
             "text": c.get('oracle_text','') or '',
@@ -116,11 +123,12 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--prune-empty", action="store_true", help="Skip mostly empty entries.")
     ap.add_argument("--case-dedupe", action="store_true", help="Treat name case-insensitively when selecting best printing.")
+    ap.add_argument("--sort-name", action="store_true", help="Deterministic alphabetical output order.")
     args = ap.parse_args()
 
     data = load(args.input)
     by_name = filter_cards(data, limit=args.limit, verbose=args.verbose, case_dedupe=args.case_dedupe)
-    out = convert(by_name, prune_empty=args.prune_empty)
+    out = convert(by_name, prune_empty=args.prune_empty, sort_name=getattr(args,'sort_name',False))
     save(args.output, out)
     if args.verbose:
         print(f"[WRITE] {len(out)} cards -> {args.output}")
