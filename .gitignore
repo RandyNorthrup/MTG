@@ -3,13 +3,16 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-.venv/
-.env
+*.pdb
+*.egg-info/
+*.egg
+*.log
 
 # IDE / tooling
 .idea/
 .vscode/
 *.code-workspace
+*.swp
 
 # Logs & coverage
 *.log
@@ -21,10 +24,16 @@ htmlcov/
 Thumbs.db
 
 # Data (large / generated)
+data/cards/cards.db
 data/cards/card_db_full.json
-data/cards/input_bulk_default_cards.json
-data/cards/*.zip
-
+data/cards/card_db.json.bak
+data/cards/card_db_full.json.bak
+data/decks/*.autosave
+data/decks/*.tmp
+data/images/cache/
+.cache/
+.cache/*
+.venv/
 # Cache (runtime)
 cache/
 data/img_cache/
@@ -44,7 +53,7 @@ dist/
 *.spec
 
 # Virtual environments
-venv/
+# venv/
 env/
 
 # App runtime artifacts

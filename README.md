@@ -1,68 +1,68 @@
-# MTG Commander (Prototype)
+# MTG Commander (Qt)
+
+A modular, extensible Magic: The Gathering Commander game engine and GUI, written in Python with PySide6 (Qt).
 
 ## Features
-- Commander rules baseline (40 life, commander tax/damage)
-- Zones & turn structure
-- Basic AI (goldfish style)
-- Qt UI (Home / Decks / Play)
-- Text deck editor (.txt)
-- Scryfall filter tool
 
-## Shortcuts
-SPACE advance / resolve  
-A declare attackers (player 0)  
-R reload custom_deck.txt  
-D deck editor info popup  
-S toggle scoreboard  
-L toggle phase logging  
-H help  
-ESC quit  
+- Modular UI: Home, Decks, Lobby/Play tabs (no gameplay logic in MainWindow)
+- Card database and fetch logic fully separated (`engine/card_db.py`, `engine/card_fetch.py`)
+- Local multiplayer and AI support
+- Deck builder/editor, pending match queue, and debug tools
+- Comprehensive rules and validation (Commander, singleton, color identity, etc.)
 
-## Troubleshooting
-- Missing images: first load fetches / caches
-- Card not found: regenerate DB or use --sdk-online
-- Stuck phase: press SPACE; check console
-- Mulligan prompt appears only with 2+ players
+## Requirements
 
-## Performance Tips
-- Use --no-log for less console noise
-- Keep filtered DB small for faster startup
-- Limit image prefetch on slow disks
+- Python 3.8+
+- PySide6
+- (Optional) [mtgsdk](https://github.com/MagicTheGathering/mtgsdk-python) for online card lookup
 
-## Contributing
-Small focused PRs (engine/UI separation). Avoid committing large generated JSON. Use .txt decks.
+## Setup
 
-## Goals
-Playable Commander sandbox for prototyping & simple AI experiments. Baseline multiplayer-ready architecture with extensible engine and deck iteration workflow.
+1. Clone the repo:
+   ```
+   git clone https://github.com/youruser/MTG.git
+   cd MTG
+   ```
 
-Controls (current):
-A declare attackers (active player 0)  
-R reload custom_deck.txt  
-D deck editor info popup  
-S toggle scoreboard  
-L toggle phase logging  
-H help  
-SPACE advance phase / resolve top of stack  
-ESC quit  
+2. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
 
-## Troubleshooting
-- Missing images: first load lazy-downloads (ensure network if using SDK fallback).
-- Card not found: regenerate DB or use --sdk-online.
-- Stuck phase: press SPACE; check console for exceptions.
-- Mulligan / roll prompt only appears with 2+ players.
+3. (Optional) For online card lookup:
+   ```
+   pip install mtgsdk
+   ```
 
-## Performance Tips
-Use --no-log for quieter loop. Limit deck size / image prefetch on low-end machines.
+4. Ensure you have the `data/` directory with:
+   - `data/cards/card_db.json`
+   - `data/decks/` (with at least one deck file)
+   - `data/images/` (for card images and backgrounds)
 
-## Contributing
-Small, focused PRs. Avoid committing large generated JSON blobs. Use text deck lists (.txt).
-- Multiplayer-ready architecture – engine separation retained
+## Running
 
-## Troubleshooting
-- Missing cards: regenerate DB with tools/scryfall_filter.py
-- Validation errors: deckbuilder shows issues (size, singleton, color identity, banlist)
-- Rendering glitches: ensure PySide6 version matches requirements.
+```bash
+python main.py
+```
 
+## Project Structure
+
+- `main.py` — Entry point, minimal UI shell, delegates all logic to API and modules
+- `engine/card_db.py` — Card database loading and lookup
+- `engine/card_fetch.py` — Card fetching, deck parsing, SDK integration, image prewarm
+- `engine/game_controller.py` — Game logic, turn/phase/stack management
+- `ui/game_app_api.py` — Facade for all gameplay, deck, and lobby operations
+- `ui/home_tab.py`, `ui/decks_tab.py`, `ui/play_tab.py` — Modular UI tabs
+- `data/` — Card data, decks, images
+
+## Development
+
+- All gameplay, deck, and lobby logic must be in modules or the API, not in MainWindow or tabs.
+- Use `.gitignore` to avoid committing cache, user, and build files.
+
+## License
+
+MIT License
 ## Performance Tips
 - Use `--no-log` to suppress phase logs.
 - Full DB loads once on startup.
