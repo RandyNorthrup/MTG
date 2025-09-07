@@ -28,8 +28,11 @@ class StateBasedActionEngine:
                     game.player_lost(pid, reason="STATE_BASED")
                 except Exception:
                     pass
-                if hasattr(perm, 'damage'):
-                    perm.damage = 0
+                for p in list(game.battlefield):
+                    if getattr(p, "destroy_me", False):
+                        game.move_to_graveyard(p)
+                    if getattr(p, "toughness", None) is not None and getattr(p, "damage", 0) >= p.toughness:
+                        game.move_to_graveyard(p)
 
     def _to_grave(self, player, perm):
         if hasattr(player, 'graveyard'):

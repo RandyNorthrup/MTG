@@ -1,4 +1,5 @@
 import os
+from PySide6.QtCore import Qt   # ADDED
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
     QFileDialog, QMessageBox)
 

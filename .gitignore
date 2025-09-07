@@ -1,6 +1,8 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
 .venv/
 .env
 
@@ -34,3 +36,32 @@ data/img_cache/
 
 # Runtime generated game id registry
 data/game_ids.txt
+
+# Qt + build cache
+*.qmlc
+*.jsc
+build/
+dist/
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor / tooling
+.vscode/
+.idea/
+
+# App runtime artifacts
+data/game_ids.txt
+data/cache/
+cache/
+logs/
+*.log
+
+# Image cache (if generated)
+image_cache/
+
+# Documentation
+docs/

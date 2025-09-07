@@ -1,11 +1,12 @@
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QStackedWidget, QMessageBox
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from ui.ui_manager import PlayArea
 from engine.phase_hooks import update_phase_ui as _phase_update, install_phase_log_deduper
 
 class GameWindow(QMainWindow):
     def __init__(self, api, game_id: str):
         super().__init__()
+        self.setMinimumSize(1280, 720)  # NEW: enforce minimum size
         self.setAttribute(Qt.WA_DeleteOnClose, True)  # ensure cleanup
         self.api = api
         self.controller = api.controller
@@ -47,14 +48,21 @@ class GameWindow(QMainWindow):
         if mw:
             try:
                 g = mw.frameGeometry()
-                self.resize(int(g.width()*0.9), int(g.height()*0.9))
+                # Ensure not smaller than minimums
+                w = max(1280, int(g.width() * 0.9))
+                h = max(720, int(g.height() * 0.9))
+                self.resize(w, h)
                 c = g.center()
-                self.move(c.x() - self.width()//2, c.y() - self.height()//2)
+                self.move(c.x() - self.width() // 2, c.y() - self.height() // 2)
             except Exception:
                 pass
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.show(); self.raise_(); self.activateWindow()
+        # Drop always-on-top shortly after showing so both windows stay interactive
+        QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))
+
+        # After UI constructed (buttons exist) ensure correct initial visibility
+        QTimer.singleShot(0, self._refresh_combat_buttons)
 
     def _current_phase(self):
         return getattr(getattr(self.api, 'game', None), 'phase', 'Beginning')
@@ -67,21 +75,23 @@ class GameWindow(QMainWindow):
         return g.active_player == 0
 
     def _refresh_combat_buttons(self):
-        # UPDATED: gate buttons by whose turn it is
+        # Unified visibility rules
         ph = self._current_phase()
-        waiting = bool(getattr(self.api.controller, '_combat_wait_attackers', False) or
-                       getattr(self.api.controller, '_combat_waiting_for_attackers', False))
+        ctrl = getattr(self.api, 'controller', None)
+        waiting = bool(getattr(ctrl, '_combat_wait_attackers', False) or
+                       getattr(ctrl, '_combat_waiting_for_attackers', False))
         my_turn = self._is_my_turn()
-        # End Phase button only on your turn
-        self.btn_end_phase.setVisible(my_turn)
-        # Disable during automated Beginning sequence
-        auto_begin = (getattr(self.api.controller, '_hl_phase', '') == "Beginning" and
-                      getattr(self.api.controller, '_begin_seq_running', False))
-        self.btn_end_phase.setEnabled(my_turn and not auto_begin)
-        # Skip Combat button only if it's your turn, in Combat, and waiting for attackers
-        show_skip = my_turn and (ph == "Combat") and waiting
-        self.btn_skip_combat.setVisible(show_skip)
-        self.btn_skip_combat.setEnabled(show_skip)
+        # End Phase only on your turn
+        if hasattr(self, 'btn_end_phase'):
+            self.btn_end_phase.setVisible(my_turn)
+            auto_begin = (getattr(ctrl, '_hl_phase', '') == "Beginning" and
+                          getattr(ctrl, '_begin_seq_running', False))
+            self.btn_end_phase.setEnabled(my_turn and not auto_begin)
+        # Skip Combat only on your turn while waiting for attackers
+        if hasattr(self, 'btn_skip_combat'):
+            show_skip = my_turn and ph == "Combat" and waiting
+            self.btn_skip_combat.setVisible(show_skip)
+            self.btn_skip_combat.setEnabled(show_skip)
 
     # --- Added backward compatibility wrapper (fix AttributeError) ---
     def _update_skip_combat_btn(self):
@@ -96,7 +106,6 @@ class GameWindow(QMainWindow):
                                 QMessageBox.No) != QMessageBox.Yes:
             return
         self.api.advance_phase()
-        # Replace old call with unified refresh
         self._refresh_combat_buttons()
 
     def _skip_combat_confirm(self):
@@ -112,8 +121,8 @@ class GameWindow(QMainWindow):
         if e.key() == Qt.Key_Escape:
             self.close(); return
         self.api.handle_key(e.key())
+        super().keyPressEvent(e)
         self._refresh_combat_buttons()
-        # ...existing board refresh / banner update if any...
 
     # Optionally a method UI could call when attackers declared:
     def attackers_declared(self):  # OPTIONAL helper hook
@@ -181,3 +190,23 @@ class GameWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         ) == QMessageBox.Yes
+
+    def open(self):
+        mw = getattr(self.api, 'w', None)
+        if mw:
+            try:
+                g = mw.frameGeometry()
+                # Ensure not smaller than minimums
+                w = max(1280, int(g.width() * 0.9))
+                h = max(720, int(g.height() * 0.9))
+                self.resize(w, h)
+                c = g.center()
+                self.move(c.x() - self.width() // 2, c.y() - self.height() // 2)
+            except Exception:
+                pass
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        # Drop always-on-top shortly after showing so both windows stay interactive
+        QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))

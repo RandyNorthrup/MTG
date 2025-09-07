@@ -4,12 +4,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout
 
 from config import *
-from ui.ui_manager import PlayArea
 from ui.home_tab import build_home_tab
 from ui.decks_tab import DecksTabManager
 from ui.game_app_api import GameAppAPI
 from engine.game_init import parse_args, create_initial_game, new_game
-from image_cache import init_image_cache, teardown_cache, repair_cache
+from image_cache import teardown_cache, repair_cache  # REMOVED init_image_cache
 
 # --- Main Window Shell (logic delegated to GameAppAPI) ----------------------
 class MainWindow(QMainWindow):

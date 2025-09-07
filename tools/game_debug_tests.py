@@ -146,6 +146,28 @@ class GameDebugWindow(QWidget):
         except Exception:
             pass
 
+    # --- NEW safe helpers (placed near other helpers / before _build_verbose_dump) ---
+    def _safe_len(self, obj):
+        try:
+            if callable(obj):
+                obj = obj()
+            return len(obj)
+        except Exception:
+            return 0
+
+    def _iter_cards(self, obj, limit=None):
+        try:
+            if callable(obj):
+                obj = obj()
+            if isinstance(obj, dict):
+                obj = obj.values()
+            if not hasattr(obj, '__iter__'):
+                return []
+            seq = list(obj)
+            return seq if limit is None else seq[:limit]
+        except Exception:
+            return []
+
     # --- NEW: Verbose dump helpers ---
     def _build_verbose_dump(self):
         g = self.game
@@ -155,60 +177,79 @@ class GameDebugWindow(QWidget):
         try:
             lines.append(f"GameID: {getattr(g, 'game_id', 'N/A')}")
             lines.append(f"Phase: {getattr(g, 'phase', '?')}")
-            lines.append(f"Active Player: {getattr(g, 'active_player', '?')}")
-            if hasattr(g, 'stack'):
-                try:
-                    stack_items = getattr(g.stack, 'items', [])
-                except Exception:
-                    stack_items = []
-                lines.append(f"Stack ({len(stack_items)}):")
-                for i, it in enumerate(stack_items):
-                    lines.append(f"  {i}: {getattr(it, 'name', type(it).__name__)}")
+            lines.append(f"Active Player Index: {getattr(g, 'active_player', '?')}")
+            # Stack
+            stack_obj = getattr(g, 'stack', None)
+            stack_items = []
+            try:
+                if stack_obj:
+                    cand = getattr(stack_obj, 'items', stack_obj)
+                    if callable(cand):
+                        cand = cand()
+                    if hasattr(cand, '__iter__'):
+                        stack_items = list(cand)
+            except Exception:
+                stack_items = []
+            lines.append(f"Stack ({len(stack_items)}):")
+            for i, it in enumerate(stack_items):
+                lines.append(f"  {i}: {getattr(it, 'name', type(it).__name__)}")
+            # Players
             lines.append("Players:")
             for p in getattr(g, 'players', []):
-                lines.append(f"  [{p.player_id}] {p.name}  Life={getattr(p, 'life', '?')} "
-                             f"Hand={len(getattr(p, 'hand', []))} "
-                             f"Lib={len(getattr(p, 'library', []))} "
-                             f"GY={len(getattr(p, 'graveyard', [])) if hasattr(p,'graveyard') else 0} "
-                             f"BF={len(getattr(p, 'battlefield', [])) if hasattr(p,'battlefield') else 0}")
+                hand = getattr(p, 'hand', [])
+                library = getattr(p, 'library', [])
+                grave = getattr(p, 'graveyard', [])
+                bf = getattr(p, 'battlefield', [])
+                hand_n = self._safe_len(hand)
+                lib_n = self._safe_len(library)
+                gy_n = self._safe_len(grave)
+                bf_n = self._safe_len(bf)
+                lines.append(
+                    f"  [{getattr(p,'player_id','?')}] {p.name}  Life={getattr(p,'life','?')} "
+                    f"Hand={hand_n} Lib={lib_n} GY={gy_n} BF={bf_n}"
+                )
                 # Commander
-                if getattr(p, 'commander', None):
-                    lines.append(f"     Commander: {p.commander.name}")
+                try:
+                    cmdr = getattr(p, 'commander', None)
+                    if cmdr:
+                        lines.append(f"     Commander: {getattr(cmdr,'name','(unnamed)')}")
+                except Exception:
+                    pass
                 # Battlefield detail (limit)
-                bf = getattr(p, 'battlefield', [])[:12]
-                if bf:
-                    lines.append("     Battlefield:")
-                    for perm in bf:
-                        try:
-                            status = []
-                            if getattr(perm, 'tapped', False): status.append('T')
-                            if getattr(perm, 'summoning_sick', getattr(perm,'summoning_sickness', False)): status.append('S')
-                            ident = "/".join([str(getattr(perm,'power','?')),
-                                              str(getattr(perm,'toughness','?'))]) if 'Creature' in getattr(perm,'types',[]) else ''
-                            lines.append(f"       - {perm.name}{' ['+ident+']' if ident else ''}"
-                                         f"{' ('+', '.join(status)+')' if status else ''}")
-                        except Exception:
-                            continue
+                for perm in self._iter_cards(bf, limit=12):
+                    try:
+                        status = []
+                        if getattr(perm, 'tapped', False): status.append('T')
+                        if getattr(perm, 'summoning_sick', getattr(perm,'summoning_sickness', False)): status.append('S')
+                        pt = ""
+                        if 'Creature' in getattr(perm, 'types', []):
+                            pt = f" [{getattr(perm,'power','?')}/{getattr(perm,'toughness','?')}]"
+                        lines.append(f"       - {perm.name}{pt}{' ('+', '.join(status)+')' if status else ''}")
+                    except Exception:
+                        continue
             # Potential attackers (active player)
             ap = getattr(g, 'active_player', None)
-            if ap is not None and ap < len(getattr(g,'players',[])):
-                pl = g.players[ap]
-                attackers = []
-                for c in getattr(pl,'battlefield',[]):
-                    try:
-                        if 'Creature' not in getattr(c,'types',[]): continue
-                        if getattr(c,'tapped',False): continue
-                        sick = getattr(c,'summoning_sick', getattr(c,'summoning_sickness', False))
-                        if sick and not (getattr(c,'haste',False) or
-                                         ('Haste' in getattr(c,'keywords',[])) or
-                                         ('haste' in getattr(c,'text','').lower())):
-                            continue
-                        attackers.append(c.name)
-                    except Exception:
-                        pass
-                lines.append(f"Potential Attackers ({len(attackers)}): {', '.join(attackers) if attackers else '-'}")
+            attackers = []
+            if ap is not None and ap < self._safe_len(getattr(g, 'players', [])):
+                try:
+                    pl = g.players[ap]
+                    for c in self._iter_cards(getattr(pl, 'battlefield', [])):
+                        try:
+                            if 'Creature' not in getattr(c, 'types', []): continue
+                            if getattr(c, 'tapped', False): continue
+                            sick = getattr(c, 'summoning_sick', getattr(c,'summoning_sickness', False))
+                            if sick and not (getattr(c,'haste',False) or
+                                             'Haste' in getattr(c,'keywords',[]) or
+                                             'haste' in getattr(c,'text','').lower()):
+                                continue
+                            attackers.append(getattr(c,'name','?'))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            lines.append(f"Potential Attackers ({len(attackers)}): {', '.join(attackers) if attackers else '-'}")
         except Exception as ex:
-            lines.append(f"[ERROR building verbose dump: {ex}]")
+            lines.append(f"[ERROR building verbose dump (handled)]: {ex}")
         return "\n".join(lines)
 
     def _refresh_verbose(self, auto=False):
