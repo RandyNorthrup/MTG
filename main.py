@@ -1,9 +1,9 @@
 ﻿import sys, os, json, re, argparse
 from PySide6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
-                               QVBoxLayout, QLabel, QPushButton, QMessageBox,
-                               QListWidget, QListWidgetItem, QHBoxLayout, QLineEdit,
-                               QStackedWidget, QSplitter)  # ADDED QStackedWidget, QSplitter
-from PySide6.QtCore import QTimer, Qt
+    QVBoxLayout, QLabel, QPushButton, QMessageBox, QListWidget, QListWidgetItem,
+    QHBoxLayout, QLineEdit, QStackedWidget, QSplitter,
+    QGridLayout, QListView, QSpinBox, QGroupBox, QFrame, QCheckBox)  # ADDED widgets
+from PySide6.QtCore import QTimer, Qt, QSize  # ADDED QSize
 from PySide6.QtGui import QPixmap, QPainter
 from config import *
 from engine.game_state import GameState, PlayerState
@@ -519,9 +519,12 @@ class MainWindow(QMainWindow):
 
     # ADDED: deck editor state holder
     def _deck_editor_state_init(self):
+        # existing simple state replaced / extended
         self.current_deck_path = os.path.join('data', 'decks', 'custom_deck.txt')
-        self.current_deck_cards = []
-        self.current_commander = None
+        self.deck_builder_initialized = False
+        self.deck_main = {}        # name -> (card_obj, count)
+        self.deck_commander = None
+        self.deck_counts = {"lands":0,"creatures":0,"other":0,"total":0}
 
     # ADDED: build tabs (Home, Decks, Play)
     def _init_tabs(self):
@@ -540,52 +543,335 @@ class MainWindow(QMainWindow):
 
     # ADDED: decks tab
     def _build_decks_tab(self):
-        w = QWidget()
-        v = QVBoxLayout(w); v.setContentsMargins(6,6,6,6)
-        top = QHBoxLayout()
-        self.deck_search_box = QLineEdit()
-        self.deck_search_box.setPlaceholderText("Search (substring)")
-        self.deck_search_box.textChanged.connect(self._refresh_deck_tab)
-        btn_reload = QPushButton("Reload Player 0 Deck")
-        btn_reload.clicked.connect(self._reload_player0)
-        top.addWidget(self.deck_search_box, 1)
-        top.addWidget(btn_reload)
-        v.addLayout(top)
+        if not self.deck_builder_initialized:
+            self._init_deck_builder_state()
+        root = QWidget()
+        layout = QHBoxLayout(root); layout.setContentsMargins(4,4,4,4); layout.setSpacing(6)
+
+        splitter = QSplitter()
+        layout.addWidget(splitter)
+
+        # LEFT FILTER PANEL
+        filt = QWidget()
+        fv = QVBoxLayout(filt); fv.setContentsMargins(0,0,0,0); fv.setSpacing(4)
+
+        self.card_search_box = QLineEdit()
+        self.card_search_box.setPlaceholderText("Search card name...")
+        self.card_search_box.returnPressed.connect(self._apply_card_filters)
+        fv.addWidget(self.card_search_box)
+
+        color_row = QHBoxLayout()
+        self.color_checks = {}
+        for sym, tip in zip("WUBRG", ["White","Blue","Black","Red","Green"]):
+            cb = QCheckBox(sym)
+            cb.setToolTip(tip)
+            cb.stateChanged.connect(self._apply_card_filters)
+            self.color_checks[sym] = cb
+            color_row.addWidget(cb)
+        color_row.addStretch(1)
+        fv.addLayout(color_row)
+
+        self.type_checks = {}
+        type_row = QGridLayout()
+        cand_types = ["Creature","Artifact","Enchantment","Instant","Sorcery","Planeswalker","Land"]
+        for i,t in enumerate(cand_types):
+            cb = QCheckBox(t)
+            cb.stateChanged.connect(self._apply_card_filters)
+            self.type_checks[t] = cb
+            type_row.addWidget(cb, i//2, i%2)
+        fv.addLayout(type_row)
+
+        btn_filter = QPushButton("Apply Filters")
+        btn_filter.clicked.connect(self._apply_card_filters)
+        fv.addWidget(btn_filter)
+
+        fv.addStretch(1)
+
+        splitter.addWidget(filt)
+
+        # RIGHT: MAIN PANEL (Vertical)
+        right = QWidget()
+        rv = QVBoxLayout(right); rv.setContentsMargins(0,0,0,0); rv.setSpacing(4)
+
+        # Top controls
+        ctrl_row = QHBoxLayout()
+        self.add_qty_spin = QSpinBox()
+        self.add_qty_spin.setRange(1,4)
+        self.add_qty_spin.setValue(1)
+        ctrl_row.addWidget(QLabel("Qty"))
+        ctrl_row.addWidget(self.add_qty_spin)
+        self.btn_add_selected = QPushButton("Add Selected")
+        self.btn_add_selected.clicked.connect(self._add_selected_card)
+        ctrl_row.addWidget(self.btn_add_selected)
+        self.btn_clear_filters = QPushButton("Reset Filters")
+        self.btn_clear_filters.clicked.connect(self._reset_card_filters)
+        ctrl_row.addWidget(self.btn_clear_filters)
+        ctrl_row.addStretch(1)
+        rv.addLayout(ctrl_row)
+
+        # Card gallery
+        self.card_gallery = QListWidget()
+        self.card_gallery.setViewMode(QListView.IconMode)
+        self.card_gallery.setResizeMode(QListWidget.Adjust)
+        self.card_gallery.setMovement(QListWidget.Static)
+        self.card_gallery.setIconSize(QSize(144, 200))  # CHANGED (Qt.QSize -> QSize)
+        self.card_gallery.setSpacing(8)
+        self.card_gallery.itemDoubleClicked.connect(lambda _: self._add_selected_card(double_click=True))
+        rv.addWidget(self.card_gallery, 3)
+
+        # Commander + Deck list split
+        lower_split = QSplitter()
+        lower_split.setOrientation(Qt.Horizontal)
+
+        # Commander panel
+        cmd_panel = QGroupBox("Commander")
+        cv = QVBoxLayout(cmd_panel); cv.setContentsMargins(6,6,6,6); cv.setSpacing(4)
+        self.cmd_img = QLabel()
+        self.cmd_img.setFixedSize(180,250)
+        self.cmd_img.setStyleSheet("background:#222;border:1px solid #444;")
+        self.cmd_img.setAlignment(Qt.AlignCenter)
+        cv.addWidget(self.cmd_img)
+        self.cmd_name_lbl = QLabel("<none>")
+        self.cmd_name_lbl.setStyleSheet("color:#bbb;")
+        cv.addWidget(self.cmd_name_lbl)
+        btn_set_cmd = QPushButton("Set From Selection")
+        btn_set_cmd.clicked.connect(self._set_commander_from_selection)
+        cv.addWidget(btn_set_cmd)
+        btn_clear_cmd = QPushButton("Clear Commander")
+        btn_clear_cmd.clicked.connect(self._clear_commander)
+        cv.addWidget(btn_clear_cmd)
+        cv.addStretch(1)
+        lower_split.addWidget(cmd_panel)
+
+        # Deck list panel
+        deck_panel = QGroupBox("Deck (Main)")
+        dv = QVBoxLayout(deck_panel); dv.setContentsMargins(6,6,6,6); dv.setSpacing(4)
         self.deck_list_widget = QListWidget()
-        v.addWidget(self.deck_list_widget, 1)
-        self.deck_summary_lbl = QLabel("")
-        self.deck_summary_lbl.setStyleSheet("color:#777;font-size:11px;")
-        v.addWidget(self.deck_summary_lbl)
-        self._refresh_deck_tab()
-        return w
+        self.deck_list_widget.itemDoubleClicked.connect(self._remove_deck_entry)
+        dv.addWidget(self.deck_list_widget, 1)
 
-    # ADDED: refresh deck list
-    def _refresh_deck_tab(self):
-        if not hasattr(self, 'deck_list_widget'): return
-        if not self.game or not self.game.players: return
-        try:
-            p0 = self.game.players[0]
-        except Exception:
+        # Summary
+        sum_row = QHBoxLayout()
+        self.summary_lbl = QLabel("")
+        self.summary_lbl.setStyleSheet("font:11px 'Consolas';")
+        sum_row.addWidget(self.summary_lbl, 1)
+        btn_remove_sel = QPushButton("Remove Selected")
+        btn_remove_sel.clicked.connect(self._remove_deck_entry)
+        sum_row.addWidget(btn_remove_sel)
+        dv.addLayout(sum_row)
+        lower_split.addWidget(deck_panel)
+
+        lower_split.setStretchFactor(0,0)
+        lower_split.setStretchFactor(1,1)
+        rv.addWidget(lower_split, 2)
+
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0,0)
+        splitter.setStretchFactor(1,1)
+
+        # initial populate
+        self._populate_card_gallery()
+        self._refresh_deck_builder_lists()
+        self._update_deck_summary()
+
+        return root
+
+    # --- NEW: deck builder helpers ---
+    def _init_deck_builder_state(self):
+        # Load DB (already loaded globally)
+        self._deck_builder_db = load_card_db()[1]  # by_name_lower for filtering fast
+        self.deck_builder_initialized = True
+
+    def _reset_card_filters(self):
+        self.card_search_box.clear()
+        for cb in self.color_checks.values():
+            cb.setChecked(False)
+        for cb in self.type_checks.values():
+            cb.setChecked(False)
+        self._apply_card_filters()
+
+    def _apply_card_filters(self):
+        self._populate_card_gallery()
+
+    def _populate_card_gallery(self):
+        if not self.deck_builder_initialized:
             return
-        term = (self.deck_search_box.text().strip().lower()
-                if self.deck_search_box.text() else "")
-        rows = []
-        if p0.commander:
-            rows.append(("Commander", p0.commander.name))
-        for c in p0.library:
-            rows.append(("Library", c.name))
-        for c in getattr(p0, 'hand', []):
-            rows.append(("Hand", c.name))
-        self.deck_list_widget.clear()
-        shown = 0
-        for zone, name in rows:
-            if term and term not in name.lower():
+        term = self.card_search_box.text().strip().lower()
+        color_filter = {c for c,cb in self.color_checks.items() if cb.isChecked()}
+        type_filter = {t for t,cb in self.type_checks.items() if cb.isChecked()}
+        by_name_lower = load_card_db()[1]  # name->card dict
+        items = []
+        for name, card in by_name_lower.items():
+            if term and term not in name:
                 continue
-            self.deck_list_widget.addItem(f"{zone}: {name}")
-            shown += 1
-        self.deck_summary_lbl.setText(f"Player0 cards (shown {shown}/{len(rows)})")
+            # types / colors
+            if type_filter:
+                if not any(t in card.get('types',[]) for t in type_filter):
+                    continue
+            if color_filter:
+                cid = set(card.get('color_identity', []))
+                if not cid & color_filter:
+                    continue
+            items.append(card)
+        # Limit (performance)
+        items = items[:400]
+        self.card_gallery.clear()
+        for c in items:
+            ensure_card_image(c['id'])
+            li = QListWidgetItem(c['name'])
+            li.setData(Qt.UserRole, c)
+            img_path = os.path.join('data','img_cache', f"{c['id']}.jpg")
+            if os.path.exists(img_path):
+                pm = QPixmap(img_path).scaled(144,200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                li.setIcon(pm)
+            self.card_gallery.addItem(li)
 
-    # ADDED: stacked play (lobby + board)
+    def _add_selected_card(self, double_click=False):
+        sel = self.card_gallery.selectedItems()
+        if not sel:
+            return
+        card = sel[0].data(Qt.UserRole)
+        qty = self.add_qty_spin.value()
+        # Commander cannot be added to main if currently commander (skip duplicate)
+        if self.deck_commander and card['id'] == self.deck_commander['id']:
+            return
+        # Singleton rule (basic lands exempt)
+        entry = self.deck_main.get(card['name'])
+        if entry:
+            if not self._is_basic_land(card) and entry[1] >= 1:
+                # skip (commander singleton)
+                return
+            entry = (entry[0], entry[1]+qty)
+        else:
+            entry = (card, qty)
+        self.deck_main[card['name']] = entry
+        self._refresh_deck_builder_lists()
+        self._recompute_deck_counts()
+        self._update_deck_summary()
+
+    def _add_card_by_name(self, name, qty=1):
+        by_name_lower = load_card_db()[1]
+        c = by_name_lower.get(name.lower())
+        if not c:
+            return
+        for _ in range(qty):
+            self._add_card_object(c)
+
+    def _add_card_object(self, c):
+        # internal add single
+        entry = self.deck_main.get(c['name'])
+        if entry:
+            if not self._is_basic_land(c) and entry[1] >= 1:
+                return
+            self.deck_main[c['name']] = (entry[0], entry[1]+1)
+        else:
+            self.deck_main[c['name']] = (c,1)
+
+    def _remove_deck_entry(self, *_):
+        sel = self.deck_list_widget.selectedItems()
+        if not sel:
+            return
+        it = sel[0]
+        name = it.data(Qt.UserRole)
+        if name in self.deck_main:
+            card, ct = self.deck_main[name]
+            if ct <= 1:
+                del self.deck_main[name]
+            else:
+                self.deck_main[name] = (card, ct-1)
+        self._refresh_deck_builder_lists()
+        self._recompute_deck_counts()
+        self._update_deck_summary()
+
+    def _refresh_deck_builder_lists(self):
+        self.deck_list_widget.clear()
+        # Sort by type grouping (Creature, Land, Other)
+        def key(entry):
+            c, ct = entry
+            types = c.get('types', [])
+            if 'Land' in types: grp = 0
+            elif 'Creature' in types: grp = 1
+            else: grp = 2
+            return (grp, c['name'])
+        for name, (c, ct) in sorted(self.deck_main.items(), key=key):
+            disp = f"{ct}x {c['name']}"
+            li = QListWidgetItem(disp)
+            li.setData(Qt.UserRole, name)
+            self.deck_list_widget.addItem(li)
+        # Commander image
+        if self.deck_commander:
+            ensure_card_image(self.deck_commander['id'])
+            pth = os.path.join('data','img_cache', f"{self.deck_commander['id']}.jpg")
+            if os.path.exists(pth):
+                pm = QPixmap(pth).scaled(180,250, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.cmd_img.setPixmap(pm)
+            self.cmd_name_lbl.setText(self.deck_commander['name'])
+        else:
+            self.cmd_img.clear()
+            self.cmd_name_lbl.setText("<none>")
+
+    def _recompute_deck_counts(self):
+        lands = creatures = other = 0
+        total = 0
+        for c, ct in (v for v in self.deck_main.values()):
+            total += ct
+            types = c.get('types', [])
+            if 'Land' in types:
+                lands += ct
+            elif 'Creature' in types:
+                creatures += ct
+            else:
+                other += ct
+        self.deck_counts.update({"lands":lands,"creatures":creatures,"other":other,"total":total})
+
+    def _update_deck_summary(self):
+        # Commander deck: 99 main + 1 commander (basic logic)
+        main_target = 99
+        have_main = self.deck_counts['total']
+        valid = (have_main == main_target) and (self.deck_commander is not None)
+        col = "#5cb85c" if valid else "#d9534f"
+        self.summary_lbl.setText(
+            f"Lands:{self.deck_counts['lands']}  Creatures:{self.deck_counts['creatures']}  "
+            f"Other:{self.deck_counts['other']}  Total:{have_main}/99  "
+            f"{'OK' if valid else 'Incomplete'}"
+        )
+        self.summary_lbl.setStyleSheet(f"font:11px 'Consolas'; color:{col};")
+
+    def _is_basic_land(self, card):
+        # heuristic: type Land and name in standard basic set
+        return ('Land' in card.get('types', [])) and card['name'] in (
+            'Plains','Island','Swamp','Mountain','Forest','Wastes'
+        )
+
+    def _set_commander_from_selection(self):
+        sel = self.card_gallery.selectedItems()
+        if not sel:
+            return
+        card = sel[0].data(Qt.UserRole)
+        # must be legendary creature (simplified heuristic: contains "Legendary" + "Creature" in types line? types list from DB)
+        types = card.get('types', [])
+        # If DB lacks 'Legendary' separate type (common your DB might store supertypes elsewhere) fallback simple allow any Creature
+        if 'Creature' not in types:
+            return
+        self.deck_commander = card
+        # Remove from main if present
+        if card['name'] in self.deck_main:
+            del self.deck_main[card['name']]
+        self._recompute_deck_counts()
+        self._refresh_deck_builder_lists()
+        self._update_deck_summary()
+
+    def _clear_commander(self):
+        self.deck_commander = None
+        self._refresh_deck_builder_lists()
+        self._update_deck_summary()
+
+    # --- REPLACED: old _refresh_deck_tab (now builder uses _refresh_deck_builder_lists) ---
+    def _refresh_deck_tab(self):
+        if getattr(self, 'deck_builder_initialized', False):
+            self._refresh_deck_builder_lists()
+            self._update_deck_summary()
+    # --- ADDED: stacked play (lobby + board)
     def _build_play_tab_stack(self):
         self.play_stack = QStackedWidget()
         self.lobby_widget = LobbyWidget(self)
