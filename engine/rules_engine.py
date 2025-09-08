@@ -1,10 +1,14 @@
 import re
 from typing import List
-from .ability import Ability, TriggeredAbility, StaticKeywordAbility
-from .ability import TriggerEvent  # NEW
-from .ability import ActivatedAbility  # NEW
-from .ability import StaticBuffAbility  # NEW
-from engine.mana import ManaPool, parse_mana_cost  # added parse_mana_cost for cost parsing
+from engine.keywords import (
+    Ability, TriggeredAbility, StaticKeywordAbility,
+    TriggerEvent, ActivatedAbility, StaticBuffAbility
+)
+from engine.mana import ManaPool, parse_mana_cost  # already correct import for mana/mana pool
+from engine.phase_hooks import (
+    advance_phase, advance_step, set_phase, update_phase_ui, log_phase
+)
+
 # Regex patterns (very small subset)
 _PAT_ETB = re.compile(r'^\s*when\s+.*?enters the battlefield,\s*(.+)$', re.IGNORECASE)
 _PAT_ATTACK = re.compile(r'^\s*whenever\s+.*?attacks,\s*(.+)$', re.IGNORECASE)
@@ -131,14 +135,16 @@ def _parse_activated(line: str):
 
 class RulesEngine:
     """
-    Registry of parsed abilities. Actual effect resolution is deferred
-    (stub hooks provided for future expansion).
+    Handles core gameplay logic (triggers, activations, ability parsing, etc).
+    All gameplay rules and validation are sourced from engine/ rules modules and data.
+    The RulesEngine is orchestrated and owned by GameController, which is responsible for
+    calling into it at the appropriate times (e.g., phase/step changes, ETB, deaths, etc).
     """
     def __init__(self, game):
         self.game = game
         self.card_abilities = {}  # card.id -> list[Ability]
-        self.trigger_queue: list[TriggerEvent] = []        # NEW
-        self.processing = False                           # guard against re-entrancy
+        self.trigger_queue: list[TriggerEvent] = []
+        self.processing = False
         self.pending_activation = None  # (card, ability) while selecting target
 
     def register_card(self, card):
@@ -297,3 +303,132 @@ def parse_and_attach(card):
     abilities = parse_oracle_text(text)
     card.oracle_abilities = abilities
     return abilities
+
+# --- Commander rules logic merged from commander_rules.py ---
+
+from dataclasses import dataclass, field
+from typing import Dict, Tuple, List, Optional, Set
+
+@dataclass
+class CommanderTracker:
+    # Track casts per commander by the CARD'S STRING ID (UUID)
+    cast_counts: Dict[str, int] = field(default_factory=dict)
+    # Track commander combat damage by (defender_pid, commander_owner_pid)
+    damage: Dict[Tuple[int, int], int] = field(default_factory=dict)
+    # Track zone changes for commander tax (card_id -> int)
+    zone_changes: Dict[str, int] = field(default_factory=dict)
+    # Track which commanders are in the command zone (card_id -> bool)
+    in_command_zone: Dict[str, bool] = field(default_factory=dict)
+    # Track partner/background/companion legality (card_id -> str)
+    partner_types: Dict[str, str] = field(default_factory=dict)
+
+    def tax_for(self, commander_card_id: str) -> int:
+        """+2 generic per previous cast of THIS commander from the command zone."""
+        return 2 * self.cast_counts.get(commander_card_id, 0)
+
+    def note_cast(self, commander_card_id: str) -> None:
+        self.cast_counts[commander_card_id] = self.cast_counts.get(commander_card_id, 0) + 1
+
+    def add_damage(self, defender_pid: int, commander_owner_id: int, amount: int) -> None:
+        k = (defender_pid, commander_owner_id)
+        self.damage[k] = self.damage.get(k, 0) + amount
+
+    def lethal_from(self, defender_pid: int, commander_owner_id: int) -> bool:
+        # 21+ combat damage from the same commander
+        return self.damage.get((defender_pid, commander_owner_id), 0) >= 21
+
+    def note_zone_change(self, commander_card_id: str) -> None:
+        """Track zone changes for commander tax (for advanced rules)."""
+        self.zone_changes[commander_card_id] = self.zone_changes.get(commander_card_id, 0) + 1
+
+    def is_in_command_zone(self, commander_card_id: str) -> bool:
+        return self.in_command_zone.get(commander_card_id, False)
+
+    def set_in_command_zone(self, commander_card_id: str, present: bool) -> None:
+        self.in_command_zone[commander_card_id] = present
+
+    def set_partner_type(self, commander_card_id: str, partner_type: str) -> None:
+        """partner_type: 'partner', 'partner_with', 'background', 'friends_forever', etc."""
+        self.partner_types[commander_card_id] = partner_type
+
+    def get_partner_type(self, commander_card_id: str) -> Optional[str]:
+        return self.partner_types.get(commander_card_id)
+
+    def reset(self):
+        self.cast_counts.clear()
+        self.damage.clear()
+        self.zone_changes.clear()
+        self.in_command_zone.clear()
+        self.partner_types.clear()
+
+    # --- Advanced validation helpers ---
+
+    @staticmethod
+    def validate_deck(commander_cards: List[dict], deck_cards: List[dict]) -> Dict[str, str]:
+        """
+        Validate advanced commander rules for a deck.
+        Returns a dict of error_code -> message for each violation.
+        """
+        errors = {}
+        # Commander zone size
+        if not (1 <= len(commander_cards) <= 2):
+            errors['TooManyCommanders'] = "Deck must have 1 or 2 commanders."
+        # Partner/background/friends forever logic
+        if len(commander_cards) == 2:
+            types = [c.get('partner_type') for c in commander_cards]
+            if not CommanderTracker._valid_partner_combo(types):
+                errors['InvalidPartner'] = f"Invalid partner/background combination: {types}"
+        # Color identity
+        color_id = CommanderTracker._combined_color_identity(commander_cards)
+        for c in deck_cards:
+            if not set(c.get('color_identity', [])).issubset(color_id):
+                errors['CardHasIncorrectColorID'] = (
+                    f"Card '{c['name']}' has color identity {c.get('color_identity',[])} "
+                    f"outside of commander's color identity {color_id}"
+                )
+        # Singleton (except basic lands)
+        seen = {}
+        for c in deck_cards:
+            if c.get('is_basic_land'):
+                continue
+            k = c['name']
+            seen[k] = seen.get(k, 0) + 1
+            if seen[k] > 1:
+                errors['CardInvalidQty'] = f"Card '{k}' appears more than once."
+        # Deck size
+        if len(deck_cards) != 99:
+            errors['DeckWrongSize'] = f"Deck must have 99 cards, found {len(deck_cards)}."
+        return errors
+
+    @staticmethod
+    def _valid_partner_combo(types: List[Optional[str]]) -> bool:
+        """
+        Returns True if the two commander types are a legal combo.
+        """
+        tset = set(types)
+        if tset == {'partner'}:
+            return True
+        if 'choose_a_background' in tset and 'background' in tset:
+            return True
+        if tset == {'friends_forever'}:
+            return True
+        if tset == {'partner_with'}:
+            return True
+        return False
+
+    @staticmethod
+    def _combined_color_identity(commander_cards: List[dict]) -> Set[str]:
+        color_id = set()
+        for c in commander_cards:
+            color_id.update(c.get('color_identity', []))
+        return color_id
+
+    @staticmethod
+    def report_commander_state(tracker: 'CommanderTracker') -> str:
+        """Return a human-readable summary of commander state for debugging."""
+        lines = []
+        for cid, count in tracker.cast_counts.items():
+            lines.append(f"Commander {cid}: cast {count} times, tax {tracker.tax_for(cid)}")
+        for (def_pid, own_pid), dmg in tracker.damage.items():
+            lines.append(f"Player {def_pid} has taken {dmg} commander damage from player {own_pid}")
+        return "\n".join(lines) if lines else "No commander state tracked."

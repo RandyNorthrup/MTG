@@ -5,7 +5,6 @@ from image_cache import ensure_card_image
 from config import STARTING_LIFE
 from engine.game_state import GameState, PlayerState
 from ai.basic_ai import BasicAI
-from engine.turn_manager import TurnManager
 from engine.rules_engine import init_rules
 from ai_players.ai_player_simple import enhance_ai_controllers  # CHANGED
 from engine.turn_structure import (
@@ -18,6 +17,7 @@ from engine.phase_hooks import (
     update_phase_ui,
     log_phase,  # Import log_phase from phase_hooks
 )
+from engine.stack import StackEngine  # ADDED
 
 class GameController:
     """
@@ -29,11 +29,6 @@ class GameController:
     """
     def __init__(self, game: GameState, ai_ids: Iterable[int], *, logging_enabled: bool):
         self.game = game
-        if not hasattr(self.game, 'turn_manager'):
-            try:
-                self.game.turn_manager = TurnManager(self.game)
-            except Exception:
-                pass
         self.logging_enabled = logging_enabled
         self.ai_controllers: Dict[int, BasicAI] = {pid: BasicAI(pid=pid) for pid in ai_ids}
         enhance_ai_controllers(self.game, self.ai_controllers)  # CHANGED
@@ -52,8 +47,7 @@ class GameController:
         self.visited_phases: set[str] = set()  # phases fully completed this turn
 
         # ---------- Strict Stack Mechanics ----------
-        self.stack = []  # Strict stack: list of stack objects (LIFO)
-        self._stack_id_counter = 1  # Unique id for stack objects
+        self.stack_engine = StackEngine(self.game, logging_enabled=self.logging_enabled)  # ADDED
 
     # ---------- Logging ----------
     def log_phase(self):
@@ -298,231 +292,68 @@ class GameController:
                     return perm
         return None
 
-    # ---------- Strict Stack Mechanics ----------
-    def __init__(self, game: GameState, ai_ids: Iterable[int], *, logging_enabled: bool):
-        self.game = game
-        if not hasattr(self.game, 'turn_manager'):
-            try:
-                self.game.turn_manager = TurnManager(self.game)
-            except Exception:
-                pass
-        self.logging_enabled = logging_enabled
-        self.ai_controllers: Dict[int, BasicAI] = {pid: BasicAI(pid=pid) for pid in ai_ids}
-        enhance_ai_controllers(self.game, self.ai_controllers)  # CHANGED
+    # Remove all stack logic from here; expose as proxy if needed for legacy:
+    @property
+    def stack(self):
+        return self.stack_engine.stack
 
-        # Flow state
-        self.in_game = False
-        self.first_player_decided = False
-        self.opening_hands_drawn = False
-        self.skip_first_draw_player = None
-        self.skip_first_draw_used = False
-        self._game_flow_started = False
+    def add_to_stack(self, *args, **kwargs):
+        return self.stack_engine.add_to_stack(*args, **kwargs)
 
-        # Turn structure state
-        self.current_phase: str = PHASE_SEQUENCE[0]
-        self.current_step: str = first_step_of_phase(self.current_phase)
-        self.visited_phases: set[str] = set()  # phases fully completed this turn
-
-        # ---------- Strict Stack Mechanics ----------
-        self.stack = []  # Strict stack: list of stack objects (LIFO)
-        self._stack_id_counter = 1  # Unique id for stack objects
-
-    def add_to_stack(self, obj, obj_type: str, controller_id: int, targets=None, info=None):
-        """
-        Add a spell or ability to the stack.
-        obj_type: 'spell' | 'activated' | 'triggered'
-        obj: Card or Ability object
-        controller_id: player id who controls the object
-        targets: list of targets (optional)
-        info: dict for extra metadata (optional)
-        Returns stack object id.
-        """
-        stack_obj = {
-            "id": self._stack_id_counter,
-            "type": obj_type,
-            "obj": obj,
-            "controller_id": controller_id,
-            "targets": targets or [],
-            "info": info or {},
-        }
-        self._stack_id_counter += 1
-        self.stack.append(stack_obj)
-        if self.logging_enabled:
-            print(f"[STACK] + {obj_type.upper()} ({getattr(obj, 'name', getattr(obj, 'raw_text', repr(obj)))}) by P{controller_id} (targets: {targets})")
-        return stack_obj["id"]
-
-    def can_add_to_stack(self, obj, obj_type: str, controller_id: int, targets=None, info=None):
-        """
-        Check if the object can be legally added to the stack (timing, legality, etc).
-        For now, always returns True (expand for strict rules).
-        """
-        # TODO: Implement strict timing, priority, and legality checks.
-        return True
+    def can_add_to_stack(self, *args, **kwargs):
+        return self.stack_engine.can_add_to_stack(*args, **kwargs)
 
     def can_resolve(self):
-        """Return True if the stack is non-empty and the top object is resolvable."""
-        return bool(self.stack)
+        return self.stack_engine.can_resolve()
 
-    def resolve_top(self, game=None):
-        """
-        Resolve the top object on the stack (LIFO).
-        Handles spells, activated abilities, triggered abilities.
-        """
-        if not self.stack:
-            return None
-        stack_obj = self.stack.pop()
-        obj_type = stack_obj["type"]
-        obj = stack_obj["obj"]
-        controller_id = stack_obj["controller_id"]
-        targets = stack_obj["targets"]
-        info = stack_obj["info"]
-        if self.logging_enabled:
-            print(f"[STACK] - Resolving {obj_type.upper()} ({getattr(obj, 'name', getattr(obj, 'raw_text', repr(obj)))}) by P{controller_id}")
-        # Dispatch to appropriate resolver
-        if obj_type == "spell":
-            self._resolve_spell(obj, controller_id, targets, info)
-        elif obj_type == "activated":
-            self._resolve_activated_ability(obj, controller_id, targets, info)
-        elif obj_type == "triggered":
-            self._resolve_triggered_ability(obj, controller_id, targets, info)
-        else:
-            if self.logging_enabled:
-                print(f"[STACK][WARN] Unknown stack object type: {obj_type}")
-        # After resolution, check for state-based actions, triggers, etc.
-        self._after_stack_resolution()
-        return stack_obj
-
-    def _resolve_spell(self, card, controller_id, targets, info):
-        # Example: move spell to graveyard, apply effect, etc.
-        if hasattr(card, "resolve"):
-            card.resolve(self.game, controller_id, targets, info)
-        else:
-            # Default: move to graveyard
-            if hasattr(self.game, "move_to_graveyard"):
-                self.game.move_to_graveyard(card, controller_id)
-        if self.logging_enabled:
-            print(f"[STACK][SPELL] {getattr(card, 'name', repr(card))} resolved.")
-
-    def _resolve_activated_ability(self, ability, controller_id, targets, info):
-        # ability: ActivatedAbility object
-        if hasattr(ability, "resolve"):
-            ability.resolve(self.game, controller_id, targets, info)
-        if self.logging_enabled:
-            print(f"[STACK][ACTIVATED] {getattr(ability, 'raw_text', repr(ability))} resolved.")
-
-    def _resolve_triggered_ability(self, ability, controller_id, targets, info):
-        # ability: TriggeredAbility object
-        if hasattr(ability, "resolve"):
-            ability.resolve(self.game, controller_id, targets, info)
-        if self.logging_enabled:
-            print(f"[STACK][TRIGGERED] {getattr(ability, 'raw_text', repr(ability))} resolved.")
-
-    def _after_stack_resolution(self):
-        """
-        After a stack object resolves, check for state-based actions, triggers, etc.
-        """
-        # Example: check for lethal damage, empty library, etc.
-        # This is a stub for integration with rules engine.
-        if hasattr(self.game, "check_state_based_actions"):
-            self.game.check_state_based_actions()
-        # Check for new triggers and add to stack if needed
-        if hasattr(self.game, "check_triggers"):
-            triggers = self.game.check_triggers()
-            for trig in triggers:
-                self.add_to_stack(trig["ability"], "triggered", trig["controller_id"], trig.get("targets"), trig.get("info"))
+    def resolve_top(self, *args, **kwargs):
+        return self.stack_engine.resolve_top(*args, **kwargs)
 
     def stack_size(self):
-        return len(self.stack)
+        return self.stack_engine.stack_size()
 
     def stack_top(self):
-        return self.stack[-1] if self.stack else None
+        return self.stack_engine.stack_top()
 
     def clear_stack(self):
-        """Empty the stack (for game reset or debugging)."""
-        self.stack.clear()
-        if self.logging_enabled:
-            print("[STACK] Cleared.")
+        return self.stack_engine.clear_stack()
 
     def pass_priority(self, player_id: int):
-        """
-        Strict stack: player passes priority. If all players pass in succession, resolve top of stack or end phase.
-        """
-        # Advanced: Track priority for all players (APNAP order)
-        if not hasattr(self, "_priority_passes"):
-            self._priority_passes = set()
-        self._priority_passes.add(player_id)
-        if len(self._priority_passes) >= len(self.game.players):
-            self._priority_passes.clear()
-            if self.can_resolve():
-                self.resolve_top()
-            else:
-                # No stack: phase/step ends (handled by phase logic)
-                if self.logging_enabled:
-                    print("[STACK] All players passed, phase/step ends.")
-                advance_phase(self)
-        else:
-            if self.logging_enabled:
-                print(f"[STACK] Player {player_id} passed priority.")
-            self._priority_passes = set()
-        self._priority_passes.add(player_id)
-        if len(self._priority_passes) >= len(self.game.players):
-            self._priority_passes.clear()
-            if self.can_resolve():
-                self.resolve_top()
-            else:
-                # No stack: phase/step ends (handled by phase logic)
-                if self.logging_enabled:
-                    print("[STACK] All players passed, phase/step ends.")
-                advance_phase(self)
-        else:
-            if self.logging_enabled:
-                print(f"[STACK] Player {player_id} passed priority.")
-            ability.resolve(self.game, controller_id, targets, info)
-        if self.logging_enabled:
-            print(f"[STACK][TRIGGERED] {getattr(ability, 'raw_text', repr(ability))} resolved.")
+        return self.stack_engine.pass_priority(player_id)
 
-    def _after_stack_resolution(self):
+    # --- Merge TurnManager.tick logic here ---
+    def tick(self):
         """
-        After a stack object resolves, check for state-based actions, triggers, etc.
+        Orchestrate state-based actions, events, layers, priority, and stack resolution.
         """
-        # Example: check for lethal damage, empty library, etc.
-        # This is a stub for integration with rules engine.
-        if hasattr(self.game, "check_state_based_actions"):
-            self.game.check_state_based_actions()
-        # Check for new triggers and add to stack if needed
-        if hasattr(self.game, "check_triggers"):
-            triggers = self.game.check_triggers()
-            for trig in triggers:
-                self.add_to_stack(trig["ability"], "triggered", trig["controller_id"], trig.get("targets"), trig.get("info"))
-
-    def stack_size(self):
-        return len(self.stack)
-
-    def stack_top(self):
-        return self.stack[-1] if self.stack else None
-
-    def clear_stack(self):
-        """Empty the stack (for game reset or debugging)."""
-        self.stack.clear()
-        if self.logging_enabled:
-            print("[STACK] Cleared.")
-
-    def pass_priority(self, player_id: int):
-        """
-        Strict stack: player passes priority. If all players pass in succession, resolve top of stack or end phase.
-        """
-        # For multiplayer, track priority order and pass count.
-        # For now, assume two-player and resolve immediately if both pass.
-        # TODO: Implement strict APNAP priority and multiplayer.
-        if self.can_resolve():
-            self.resolve_top()
-        else:
-            # No stack: phase/step ends (handled by phase logic)
-            if self.logging_enabled:
-                print("[STACK] All players passed, phase/step ends.")
-        if self.can_resolve():
-            self.resolve_top()
-        else:
-            # No stack: phase/step ends (handled by phase logic)
-            if self.logging_enabled:
-                print("[STACK] All players passed, phase/step ends.")
+        # State-based actions (now from EventBus)
+        try:
+            if hasattr(self.game, "events"):
+                self.game.events.run_state_based(self.game)
+        except Exception:
+            pass
+        # Event queue
+        try:
+            if hasattr(self.game, "events"):
+                self.game.events.process()
+        except Exception:
+            pass
+        # Continuous effects/layers
+        try:
+            if hasattr(self.game, "layers"):
+                self.game.layers.recompute()
+        except Exception:
+            pass
+        # Priority (AI auto-pass)
+        try:
+            if hasattr(self.game, "priority"):
+                self.game.priority.auto_pass_if_ai()
+        except Exception:
+            pass
+        # Stack auto-resolve
+        try:
+            if hasattr(self.game, "stack") and self.game.stack.can_resolve():
+                if hasattr(self.game.stack, "auto_resolve_if_trivial"):
+                    self.game.stack.auto_resolve_if_trivial()
+        except Exception:
+            pass
