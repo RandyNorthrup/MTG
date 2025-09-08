@@ -169,7 +169,7 @@ def log_phase(controller):
             return
         ap = getattr(game, "active_player", None)
         nm = game.players[ap].name if game and game.players and ap is not None else "?"
-            if gw:
+        if gw:
                 pa = getattr(gw, "play_area", None)
         if pa and hasattr(pa, "update_phase_banner"):
             pa.update_phase_banner(disp, ap_name)
