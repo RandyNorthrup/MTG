@@ -7,7 +7,7 @@ from engine.game_state import GameState, PlayerState
 from ai.basic_ai import BasicAI
 from engine.rules_engine import init_rules
 from ai_players.ai_player_simple import enhance_ai_controllers  # CHANGED
-from engine.turn_structure import (
+from engine.game_controller import (
     PHASE_SEQUENCE, PHASE_STEPS, first_step_of_phase, next_flat_step
 )
 from engine.phase_hooks import (

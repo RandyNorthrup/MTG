@@ -5,7 +5,7 @@ from typing import List, Dict, Optional
 
 from .card_engine import Card, Permanent, ActionResult
 from .stack import Stack, StackItem
-from .commander_rules import CommanderTracker
+from .rules_engine import CommanderTracker
 
 # Ordered turn / phase list
 PHASES = [

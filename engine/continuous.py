@@ -1,7 +1,7 @@
 from typing import Dict, List, Any, Callable, TYPE_CHECKING
 if TYPE_CHECKING:
     from .game_state import GameState
-from .ability import StaticBuffAbility
+from .keywords import StaticBuffAbility
 
 class ContinuousEffect:
     def __init__(self, layer: int, fn: Callable[['GameState'], None], duration: str | None = None):

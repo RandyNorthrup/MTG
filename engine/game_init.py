@@ -10,7 +10,7 @@ except Exception:
     def set_sdk_online(_flag: bool):  # fallback no-op
         return
 
-from engine.deck_specs import build_default_deck_specs, collect_ai_player_ids
+from engine.deck_rules import build_default_deck_specs, collect_ai_player_ids
 from engine.game_ids import generate_game_id, register_game_id
 
 
