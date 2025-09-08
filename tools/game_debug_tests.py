@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QToolBar, QComboBox, QLineEdit, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer, QEvent
+from engine.phase_hooks import PHASE_SEQUENCE, PHASE_STEPS, _PHASE_ORDER
 
 class GameDebugWindow(QWidget):
     """
@@ -27,29 +28,35 @@ class GameDebugWindow(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8,8,8,8)
-        root.setSpacing(6)
+        root.setSpacing(8)
 
         # --- Toolbar with command buttons and dropdowns ---
         toolbar = QToolBar("Debug")
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         # Phase/step controls
         from engine.phase_hooks import advance_phase, advance_step, set_phase
         btn_next_phase = QPushButton("Next Phase")
-        btn_next_phase.clicked.connect(lambda: advance_phase(self.controller))
+        btn_next_phase.setToolTip("Advance to next phase")
+        btn_next_phase.clicked.connect(lambda: self._advance_phase())
         toolbar.addWidget(btn_next_phase)
 
         btn_next_step = QPushButton("Next Step")
+        btn_next_step.setToolTip("Advance to next step")
         btn_next_step.clicked.connect(lambda: advance_step(self.controller))
         toolbar.addWidget(btn_next_step)
 
         btn_new_turn = QPushButton("New Turn")
+        btn_new_turn.setToolTip("Start a new turn")
         btn_new_turn.clicked.connect(self._start_new_turn)
         toolbar.addWidget(btn_new_turn)
 
         btn_clear_stack = QPushButton("Clear Stack")
+        btn_clear_stack.setToolTip("Clear the stack")
         btn_clear_stack.clicked.connect(lambda: self.controller.clear_stack())
         toolbar.addWidget(btn_clear_stack)
 
         btn_log_phase = QPushButton("Log Phase")
+        btn_log_phase.setToolTip("Log phase to stdout")
         btn_log_phase.clicked.connect(lambda: self.controller.log_phase())
         toolbar.addWidget(btn_log_phase)
 
@@ -57,6 +64,7 @@ class GameDebugWindow(QWidget):
         mana_colors = ['W', 'U', 'B', 'R', 'G', 'C']
         for color in mana_colors:
             btn = QPushButton(f"+{color}")
+            btn.setToolTip(f"Add 1 {color} mana to selected player")
             btn.clicked.connect(lambda _, c=color: self._add_color_mana(c))
             toolbar.addWidget(btn)
 
@@ -66,24 +74,24 @@ class GameDebugWindow(QWidget):
         toolbar.addWidget(QLabel("Player:"))
         toolbar.addWidget(self.player_dropdown)
 
-        # Dropdown: select phase
+        # Dropdown: select phase (use only valid canonical phases)
         self.phase_dropdown = QComboBox()
-        self.phase_dropdown.addItems([
-            "untap", "upkeep", "draw", "precombat_main", "begin_combat", "declare_attackers",
-            "declare_blockers", "combat_damage", "end_combat", "postcombat_main", "end", "cleanup"
-        ])
+        self.phase_dropdown.addItems(_PHASE_ORDER)
         toolbar.addWidget(QLabel("Set Phase:"))
         toolbar.addWidget(self.phase_dropdown)
         btn_set_phase = QPushButton("Set")
-        btn_set_phase.clicked.connect(lambda: set_phase(self.controller, self.phase_dropdown.currentText()))
+        btn_set_phase.setToolTip("Set phase to selected value")
+        btn_set_phase.clicked.connect(lambda: self._set_phase())
         toolbar.addWidget(btn_set_phase)
 
         # Command: set life
         toolbar.addWidget(QLabel("Set Life:"))
         self.life_input = QLineEdit()
         self.life_input.setFixedWidth(40)
+        self.life_input.setPlaceholderText("life")
         toolbar.addWidget(self.life_input)
         btn_set_life = QPushButton("Set")
+        btn_set_life.setToolTip("Set selected player's life")
         btn_set_life.clicked.connect(self._set_life)
         toolbar.addWidget(btn_set_life)
 
@@ -119,6 +127,7 @@ class GameDebugWindow(QWidget):
         # Verbose refresh
         verb_row = QHBoxLayout()
         self.btn_refresh_verbose = QPushButton("Refresh Verbose")
+        self.btn_refresh_verbose.setToolTip("Refresh verbose game state dump")
         self.btn_refresh_verbose.clicked.connect(self._refresh_verbose)
         verb_row.addWidget(self.btn_refresh_verbose)
         verb_row.addStretch(1)
@@ -138,22 +147,6 @@ class GameDebugWindow(QWidget):
         self.player_dropdown.clear()
         for p in getattr(self.game, 'players', []):
             self.player_dropdown.addItem(f"P{p.player_id}: {p.name}", p.player_id)
-
-    def _set_phase(self, set_phase_func=None):
-        phase = self.phase_dropdown.currentText()
-        try:
-            if set_phase_func is None:
-                from engine import phase_hooks
-                set_phase_func = getattr(phase_hooks, "set_phase", None)
-            if set_phase_func:
-                set_phase_func(self.controller, phase)
-                self._append_log(f"[phase] set to {phase}")
-            else:
-                self.game.phase = phase
-                self._append_log(f"[phase] set to {phase} (direct)")
-        except Exception as ex:
-            self._append_log(f"[phase][err] {ex}")
-        self._safe_refresh()
 
     def _set_life(self):
         try:
@@ -225,19 +218,11 @@ class GameDebugWindow(QWidget):
         self.info_lbl.setText(self._build_info_text())
         self._update_size_labels()
         self._refresh_player_dropdown()
+        self._refresh_verbose(auto=True)
 
     # --- UI helpers ---
-    def _mk_btn(self, text, slot):
-        b = QPushButton(text)
-        b.clicked.connect(slot)
-        return b
-
     def _append_log(self, msg):
         self.log_box.append(msg)
-
-    def _update_info(self):
-        self.info_lbl.setText(self._build_info_text())
-        self._update_size_labels()
 
     def _build_info_text(self):
         try:
@@ -269,7 +254,8 @@ class GameDebugWindow(QWidget):
                 self.play_area.refresh_board()
             except Exception:
                 pass
-        self._update_info()
+        self.info_lbl.setText(self._build_info_text())
+        self._update_size_labels()
 
     def _refresh_verbose(self, auto=False):
         if auto and self._tabs.currentWidget() is not self.verbose_box:
@@ -381,21 +367,29 @@ class GameDebugWindow(QWidget):
         return "\n".join(lines)
 
     # --- Button actions ---
+    def _set_phase(self):
+        from engine.phase_hooks import set_phase
+        try:
+            phase = self.phase_dropdown.currentText()
+            set_phase(self.controller, phase)
+            self._append_log(f"[phase] set to {phase}")
+        except Exception as ex:
+            self._append_log(f"[phase][err] {ex}")
+        self._safe_refresh()
+
     def _advance_phase(self):
         try:
-            # Try to use phase_hooks if available, else fallback to controller
-            try:
-                from engine import phase_hooks
-                advance_phase = getattr(phase_hooks, "advance_phase", None)
-            except ImportError:
-                advance_phase = None
-            if advance_phase:
-                advance_phase(self.controller)
-            elif self.controller and hasattr(self.controller, "advance_phase"):
-                self.controller.advance_phase()
-            elif hasattr(self.game, 'next_phase'):
-                self.game.next_phase()
-            self._append_log("[phase] advanced")
+            # Only use valid canonical phases for advancement
+            current = getattr(self.controller, "current_phase", None)
+            if current not in _PHASE_ORDER:
+                idx = 0
+            else:
+                idx = _PHASE_ORDER.index(current)
+            next_idx = (idx + 1) % len(_PHASE_ORDER)
+            next_phase = _PHASE_ORDER[next_idx]
+            from engine.phase_hooks import set_phase
+            set_phase(self.controller, next_phase)
+            self._append_log(f"[phase] advanced to {next_phase}")
         except Exception as ex:
             self._append_log(f"[phase][err] {ex}")
         self._safe_refresh()
@@ -489,6 +483,63 @@ class GameDebugWindow(QWidget):
                 lines.append(f"P{p.player_id}:{p.name} life={p.life} hand={len(getattr(p,'hand',[]))} lib={len(getattr(p,'library',[]))}")
             if hasattr(self.game, 'stack') and getattr(self.game.stack,'items',None):
                 lines.append(f"Stack size={len(self.game.stack.items)}")
+            self._append_log("\n".join(lines))
+        except Exception as ex:
+            self._append_log(f"[dump][err] {ex}")
+            ap = self.game.active_player
+            lines = [f"[dump] phase={getattr(self.game,'phase','?')} active={ap}"]
+            for p in self.game.players:
+                lines.append(f"P{p.player_id}:{p.name} life={p.life} hand={len(getattr(p,'hand',[]))} lib={len(getattr(p,'library',[]))}")
+            if hasattr(self.game, 'stack') and getattr(self.game.stack,'items',None):
+                lines.append(f"Stack size={len(self.game.stack.items)}")
+            self._append_log("\n".join(lines))
+        except Exception as ex:
+            self._append_log(f"[dump][err] {ex}")
+            lines.append(f"Stack size={len(self.game.stack.items)}")
+            self._append_log("\n".join(lines))
+        except Exception as ex:
+            self._append_log(f"[dump][err] {ex}")
+            ap = self.game.active_player
+            lines = [f"[dump] phase={getattr(self.game,'phase','?')} active={ap}"]
+            for p in self.game.players:
+                lines.append(f"P{p.player_id}:{p.name} life={p.life} hand={len(getattr(p,'hand',[]))} lib={len(getattr(p,'library',[]))}")
+            if hasattr(self.game, 'stack') and getattr(self.game.stack,'items',None):
+                lines.append(f"Stack size={len(self.game.stack.items)}")
+            self._append_log("\n".join(lines))
+        except Exception as ex:
+            self._append_log(f"[dump][err] {ex}")
+            ap = self.game.active_player
+            lines = [f"[dump] phase={getattr(self.game,'phase','?')} active={ap}"]
+            for p in self.game.players:
+                lines.append(f"P{p.player_id}:{p.name} life={p.life} hand={len(getattr(p,'hand',[]))} lib={len(getattr(p,'library',[]))}")
+            if hasattr(self.game, 'stack') and getattr(self.game.stack,'items',None):
+                lines.append(f"Stack size={len(self.game.stack.items)}")
+            self._append_log("\n".join(lines))
+        except Exception as ex:
+            self._append_log(f"[dump][err] {ex}")
+            lines.append(f"Stack size={len(self.game.stack.items)}")
+            self._append_log("\n".join(lines))
+        except Exception as ex:
+            self._append_log(f"[dump][err] {ex}")
+            ap = self.game.active_player
+            lines = [f"[dump] phase={getattr(self.game,'phase','?')} active={ap}"]
+            for p in self.game.players:
+                lines.append(f"P{p.player_id}:{p.name} life={p.life} hand={len(getattr(p,'hand',[]))} lib={len(getattr(p,'library',[]))}")
+            if hasattr(self.game, 'stack') and getattr(self.game.stack,'items',None):
+                lines.append(f"Stack size={len(self.game.stack.items)}")
+            self._append_log("\n".join(lines))
+        except Exception as ex:
+            self._append_log(f"[dump][err] {ex}")
+            ap = self.game.active_player
+            lines = [f"[dump] phase={getattr(self.game,'phase','?')} active={ap}"]
+            for p in self.game.players:
+                lines.append(f"P{p.player_id}:{p.name} life={p.life} hand={len(getattr(p,'hand',[]))} lib={len(getattr(p,'library',[]))}")
+            if hasattr(self.game, 'stack') and getattr(self.game.stack,'items',None):
+                lines.append(f"Stack size={len(self.game.stack.items)}")
+            self._append_log("\n".join(lines))
+        except Exception as ex:
+            self._append_log(f"[dump][err] {ex}")
+            lines.append(f"Stack size={len(self.game.stack.items)}")
             self._append_log("\n".join(lines))
         except Exception as ex:
             self._append_log(f"[dump][err] {ex}")

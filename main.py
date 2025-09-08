@@ -3,15 +3,19 @@ import sys
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout
 
-from config import *
 from ui.home_tab import build_home_tab
 from ui.decks_tab import DecksTabManager
 from ui.game_app_api import GameAppAPI
 from engine.game_init import parse_args, create_initial_game, new_game
 from image_cache import teardown_cache, repair_cache
 from ui.settings_window import SettingsWindow
+from ui.ui_manager import get_default_window_size
 
 class MainWindow(QMainWindow):
+    """
+    Main application window for MTG Commander.
+    Handles tab setup and delegates all gameplay logic to GameAppAPI.
+    """
     def __init__(self, game, ai_ids, args):
         super().__init__()
         self.setWindowTitle("MTG Commander (Qt)")
@@ -24,13 +28,14 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
         self._debug_win = None
         self.settings_window = None
-        # self._add_debug_buttons()  # REMOVED: debug buttons only in debug window
 
     def set_logging_enabled(self, value: bool):
+        """Toggle phase logging."""
         self.controller.logging_enabled = bool(value)
         self.logging_enabled = self.controller.logging_enabled
 
     def _init_tabs(self):
+        """Initialize all main tabs."""
         home = build_home_tab(self.api)
         self.tabs.addTab(home, "Home")
         self.decks_manager = DecksTabManager(self.api)
@@ -44,6 +49,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(play_tab, "Lobby")
 
     def open_settings_window(self):
+        """Show the settings window."""
         if self.settings_window is None or not self.settings_window.isVisible():
             self.settings_window = SettingsWindow(self.api, self)
         self.settings_window.show()
@@ -51,12 +57,14 @@ class MainWindow(QMainWindow):
         self.settings_window.activateWindow()
 
     def keyPressEvent(self, e):
+        """Delegate key events to the API."""
         if e.key() == Qt.Key_Escape:
             self.close()
             return
         self.api.handle_key(e.key())
 
     def closeEvent(self, ev):
+        """Cleanup on close."""
         try:
             if hasattr(self, 'api'):
                 self.api.shutdown()
@@ -66,17 +74,24 @@ class MainWindow(QMainWindow):
         super().closeEvent(ev)
 
 def _prepare_environment():
+    """
+    Prepare environment variables for database backend if needed.
+    """
     if os.path.exists(os.path.join("data", "cards", "cards.db")) and not os.environ.get("MTG_SQL"):
         os.environ["MTG_SQL"] = "1"
 
 def main():
+    """
+    Application entry point.
+    """
     _prepare_environment()
     args = parse_args()
     game, ai_ids = create_initial_game(args)
     app = QApplication(sys.argv)
     repair_cache()
     win = MainWindow(game=game, ai_ids=ai_ids, args=args)
-    win.resize(SCREEN_W, SCREEN_H)
+    w, h = get_default_window_size()
+    win.resize(w, h)
     win.show()
     sys.exit(app.exec())
 

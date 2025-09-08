@@ -8,7 +8,7 @@ class GameWindow(QMainWindow):
         super().__init__()
         self.api = api
         self.setWindowTitle("Game Board")
-        self.setMinimumSize(1280, 720)  # ADDED enforce minimum board size
+        self.setMinimumSize(1280, 720)
         self.play_area = PlayArea(api.game)
         if hasattr(self.play_area, "enable_drag_and_drop"):
             self.play_area.enable_drag_and_drop()
@@ -18,45 +18,64 @@ class GameWindow(QMainWindow):
 
         bar = QHBoxLayout()
         self.phase_lbl = QLabel("Phase: —")
-        self.phase_lbl.setStyleSheet("font-weight:bold;")
+        self.phase_lbl.setStyleSheet("font-weight:bold; font-size:16px; padding:4px 0 4px 8px; background:#23242a; color:#e0e0e0;")
+        bar.addWidget(self.phase_lbl)
+        bar.addStretch(1)
         btn_dbg = QPushButton("Debug")
         btn_dbg.clicked.connect(api.toggle_debug_window)
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.close)
-        bar.addWidget(self.phase_lbl)
-        bar.addStretch(1)
         bar.addWidget(btn_dbg)
         bar.addWidget(btn_close)
         v.addLayout(bar)
 
         v.addWidget(self.play_area, 1)
 
-        # Ensure initial size is at least the minimum even if platform defaulted smaller
-        if self.width() < 1280 or self.height() < 720:  # ADDED
+        if self.width() < 1280 or self.height() < 720:
             self.resize(max(self.width(), 1280), max(self.height(), 720))
         self._phase_timer = QTimer(self)
         self._phase_timer.timeout.connect(self.refresh_phase)
-        self._phase_timer.start(750)
+        self._phase_timer.start(250)  # Faster update for real-time feel
         self.refresh_phase()
 
     def refresh_phase(self):
-        phase = getattr(self.api.controller, 'phase', '?')
-        step = getattr(self.api.controller, 'step', None)
-        ap_name = getattr(self.api.controller, 'active_player_name', "—")
-        if step and step != phase:
-            self.phase_lbl.setText(f"Phase: {phase} ({step})  Active: {ap_name}")
-        else:
-            self.phase_lbl.setText(f"Phase: {phase}  Active: {ap_name}")
+        # Show active player, phase, and step in the top bar (real time)
+        game = getattr(self.api, "game", None)
+        ctrl = getattr(self.api, "controller", None)
+        if not game or not ctrl:
+            self.phase_lbl.setText("Phase: —")
+            return
+        ap_i = getattr(game, "active_player", 0)
+        ap_name = "Player"
+        if hasattr(game, "players") and 0 <= ap_i < len(game.players):
+            ap_name = getattr(game.players[ap_i], "name", ap_name)
+        phase = getattr(ctrl, "current_phase", getattr(game, "phase", ""))
+        step = getattr(ctrl, "current_step", "")
+        # Human-friendly phase/step
+        try:
+            from engine.phase_hooks import _DISPLAY_NAMES
+            phase_disp = _DISPLAY_NAMES.get(str(phase).lower(), str(phase).capitalize())
+        except Exception:
+            phase_disp = str(phase).capitalize()
+        step_disp = str(step).capitalize() if step and step != phase else ""
+        text = f"Active Player: <b>{ap_name}</b> &nbsp;|&nbsp; Phase: <b>{phase_disp}</b>"
+        if step_disp:
+            text += f" &nbsp;|&nbsp; Step: <b>{step_disp}</b>"
+        self.phase_lbl.setText(text)
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
             self.close(); return
         self.api.handle_key(e.key())
-        super().keyPressEvent(e)
+        self.refresh_phase()
+        if hasattr(self.play_area, "refresh_board"):
+            self.play_area.refresh_board()
 
     def closeEvent(self, ev):
-        if getattr(self.api, 'board_window', None) is self:
-            self.api.board_window = None
+        try:
+            self.api.handle_game_window_closed()
+        except Exception:
+            pass
         super().closeEvent(ev)
         # Drop always-on-top shortly after showing so both windows stay interactive
         QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))
@@ -173,7 +192,8 @@ class GameWindow(QMainWindow):
         except Exception:
             pass
         super().closeEvent(ev)
-        super().closeEvent(ev)
+        # Drop always-on-top shortly after showing so both windows stay interactive
+        QTimer.singleShot(400, lambda: (self.setWindowFlag(Qt.WindowStaysOnTopHint, False), self.show()))
 
     def _confirm(self, title: str, text: str):  # ADDED
         from PySide6.QtWidgets import QMessageBox

@@ -2,20 +2,23 @@ import os, time, random
 from typing import Callable, Dict, Iterable
 from engine.mana import parse_mana_cost
 from image_cache import ensure_card_image
-from config import STARTING_LIFE
 from engine.game_state import GameState, PlayerState
 from ai.basic_ai import BasicAI
 from engine.rules_engine import init_rules
 from ai_players.ai_player_simple import enhance_ai_controllers  # CHANGED
-from engine.game_controller import (
-    PHASE_SEQUENCE, PHASE_STEPS, first_step_of_phase, next_flat_step
-)
 from engine.phase_hooks import (
+    PHASE_SEQUENCE,
+    PHASE_STEPS,
+    first_step_of_phase,
+    next_flat_step,
     advance_phase,
     advance_step,
     set_phase,
     update_phase_ui,
-    log_phase,  # Import log_phase from phase_hooks
+    log_phase,
+    init_turn_phase_state,   # ADDED: new helper for phase state init
+    get_current_phase,       # ADDED: query phase from game/board state
+    get_current_step,        # ADDED: query step from game/board state
 )
 from engine.stack import StackEngine  # ADDED
 
@@ -42,9 +45,12 @@ class GameController:
         self._game_flow_started = False
 
         # Turn structure state
-        self.current_phase: str = PHASE_SEQUENCE[0]
-        self.current_step: str = first_step_of_phase(self.current_phase)
-        self.visited_phases: set[str] = set()  # phases fully completed this turn
+        # Remove direct phase/step state, use phase_hooks for all phase/step state
+        # self.current_phase: str = PHASE_SEQUENCE[0]
+        # self.current_step: str = first_step_of_phase(self.current_phase)
+        # self.visited_phases: set[str] = set()
+        # Instead, initialize phase state via phase_hooks:
+        init_turn_phase_state(self)
 
         # ---------- Strict Stack Mechanics ----------
         self.stack_engine = StackEngine(self.game, logging_enabled=self.logging_enabled)  # ADDED
@@ -72,6 +78,15 @@ class GameController:
         self._begin_game_flow()
         self._init_turn_structure()
 
+    def start_new_turn(self):
+        """
+        Begin a new turn for the active player.
+        This method is required by turn/phase logic and should be called by the turn manager or phase engine.
+        """
+        self._init_turn_structure()
+        if self.logging_enabled:
+            print(f"[TURN] New turn started for {self.game.players[self.game.active_player].name}")
+
     def _begin_game_flow(self):
         if self._game_flow_started: return
         self._game_flow_started = True
@@ -86,12 +101,8 @@ class GameController:
             print("[START] Single-player game begun (no roll).")
 
     def _init_turn_structure(self):
-        """Initialize / reset turn-structure state for a new game or turn."""
-        self.current_phase = PHASE_SEQUENCE[0]
-        self.current_step = first_step_of_phase(self.current_phase)
-        # track for sanity (not re-entry)
-        self._turn_no = 1
-        self._active_player = 0  # Index of the active player
+        """Initialize/reset turn-structure state for a new game or turn using phase_hooks."""
+        init_turn_phase_state(self)
 
     # ---------- Roll / mulligans ----------
     def perform_first_player_roll(self):
@@ -135,12 +146,13 @@ class GameController:
 
     # Provide properties for UI consistency (phase = current_phase; step = current_step)
     @property
-    def phase(self):  # ADDED
-        return self.current_phase
+    def phase(self):
+        # Always query from phase_hooks (canonical)
+        return get_current_phase(self)
 
     @property
-    def step(self):  # ADDED
-        return self.current_step
+    def step(self):
+        return get_current_step(self)
 
     @property
     def active_player(self):
@@ -354,6 +366,15 @@ class GameController:
         try:
             if hasattr(self.game, "stack") and self.game.stack.can_resolve():
                 if hasattr(self.game.stack, "auto_resolve_if_trivial"):
+                    self.game.stack.auto_resolve_if_trivial()
+        except Exception:
+            pass
+            if hasattr(self.game.stack, "auto_resolve_if_trivial"):
+                    self.game.stack.auto_resolve_if_trivial()
+        except Exception:
+            pass
+            pass
+            if hasattr(self.game.stack, "auto_resolve_if_trivial"):
                     self.game.stack.auto_resolve_if_trivial()
         except Exception:
             pass

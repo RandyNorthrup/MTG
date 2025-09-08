@@ -1,14 +1,16 @@
 # MTG Commander (Qt)
 
-A modular, extensible Magic: The Gathering Commander game engine and GUI, written in Python with PySide6 (Qt).
+A modular, extensible Magic: The Gathering Commander game engine and GUI, built with Python and Qt (PySide6).
 
 ## Features
 
-- Modular UI: Home, Decks, Lobby/Play tabs (no gameplay logic in MainWindow)
-- Card database and fetch logic fully separated (`engine/card_db.py`, `engine/card_fetch.py`)
-- Local multiplayer and AI support
-- Deck builder/editor, pending match queue, and debug tools
-- Comprehensive rules and validation (Commander, singleton, color identity, etc.)
+- Modular UI: Home, Decks, Lobby/Play, and Settings tabs, each fully decoupled.
+- Deck building and validation (Commander rules enforced).
+- Multiplayer support (up to 4 players, AI or human).
+- Modern rules engine and card database.
+- Card image caching and prefetching.
+- Debug window for in-depth game state inspection.
+- Clean separation of UI, game logic, and data layers.
 
 ## Requirements
 
@@ -16,56 +18,44 @@ A modular, extensible Magic: The Gathering Commander game engine and GUI, writte
 - PySide6
 - (Optional) [mtgsdk](https://github.com/MagicTheGathering/mtgsdk-python) for online card lookup
 
-## Setup
+## Quick Start
 
-1. Clone the repo:
-   ```
-   git clone https://github.com/youruser/MTG.git
-   cd MTG
-   ```
+1. Install dependencies:
+    ```
+    pip install -r requirements.txt
+    ```
 
-2. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+2. Run the application:
+    ```
+    python main.py
+    ```
 
-3. (Optional) For online card lookup:
-   ```
-   pip install mtgsdk
-   ```
-
-4. Ensure you have the `data/` directory with:
-   - `data/cards/card_db.json`
-   - `data/decks/` (with at least one deck file)
-   - `data/images/` (for card images and backgrounds)
-
-## Running
-
-```bash
-python main.py
-```
+3. Place your deck files in `data/decks/` (see sample format in that folder).
 
 ## Project Structure
 
-- `main.py` — Entry point, minimal UI shell, delegates all logic to API and modules
-- `engine/card_db.py` — Card database loading and lookup
-- `engine/card_fetch.py` — Card fetching, deck parsing, SDK integration, image prewarm
-- `engine/game_controller.py` — Game logic, turn/phase/stack management
-- `ui/game_app_api.py` — Facade for all gameplay, deck, and lobby operations
-- `ui/home_tab.py`, `ui/decks_tab.py`, `ui/play_tab.py` — Modular UI tabs
-- `data/` — Card data, decks, images
+- `main.py` — Entry point, main window shell, tab setup.
+- `engine/` — Game logic, card database, card fetching, rules engine.
+- `ui/` — All UI tabs, managers, and the GameAppAPI facade.
+- `image_cache.py` — Card image caching and prefetching.
+- `data/` — Card database, decks, images, and rules files.
+
+## Modularity
+
+- All gameplay, deck, and lobby logic is handled by `GameAppAPI` and engine modules.
+- UI tabs are fully decoupled and interact only via the API.
+- Card database and card fetching are in `engine/card_db.py` and `engine/card_fetch.py`.
 
 ## Development
 
-- All gameplay, deck, and lobby logic must be in modules or the API, not in MainWindow or tabs.
-- Use `.gitignore` to avoid committing cache, user, and build files.
+- To add new tabs, create a new file in `ui/` and register it in `main.py`.
+- To extend game logic, update or add modules in `engine/`.
+- For debugging, press F9 in the app to open the debug window.
 
 ## License
 
 MIT License
-## Performance Tips
-- Use `--no-log` to suppress phase logs.
-- Full DB loads once on startup.
 
-## Contributing
-See docs/Workflow.txt (rebase + PR guidelines).
+---
+
+**Enjoy playing Commander on your desktop!**

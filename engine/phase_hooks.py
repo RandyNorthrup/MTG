@@ -34,18 +34,29 @@ PHASE_SEQUENCE = [
     "ending"
 ]
 
+# Ensure all phases used by the engine are present here:
 PHASE_STEPS = {
     "beginning": ["untap", "upkeep", "draw"],
+    "untap": ["untap"],
+    "upkeep": ["upkeep"],
+    "draw": ["draw"],
     "precombat_main": ["main1"],
     "combat": [
         "begin_combat",
         "declare_attackers",
         "declare_blockers",
         "combat_damage",
-        "end_of_combat"
+        "end_combat"
     ],
+    "begin_combat": ["begin_combat"],
+    "declare_attackers": ["declare_attackers"],
+    "declare_blockers": ["declare_blockers"],
+    "combat_damage": ["combat_damage"],
+    "end_combat": ["end_combat"],
     "postcombat_main": ["main2"],
-    "ending": ["end_step", "cleanup"]
+    "ending": ["end", "cleanup"],
+    "end": ["end"],
+    "cleanup": ["cleanup"],
 }
 
 FLAT_TURN_ORDER = [
@@ -148,48 +159,10 @@ def update_phase_ui(host):
         if hasattr(game, "players") and 0 <= ap_i < len(game.players):
             ap_name = getattr(game.players[ap_i], "name", ap_name)
         pa = getattr(host, "play_area", None)
-        if pa is None and hasattr(host, "api"):
-            gw = getattr(host.api, "_game_window", None)
-            if gw:
-                pa = getattr(gw, "play_area", None)
         if pa and hasattr(pa, "update_phase_banner"):
             pa.update_phase_banner(disp, ap_name)
     except Exception:
         pass
-
-def log_phase(controller):
-    """
-    Log the current phase and active player, only if changed since last log.
-    """
-    if not getattr(controller, "logging_enabled", False):
-        return
-    try:
-        game = getattr(controller, "game", None)
-        if not game:
-            return
-        ap = getattr(game, "active_player", None)
-        nm = game.players[ap].name if game and game.players and ap is not None else "?"
-        if gw:
-                pa = getattr(gw, "play_area", None)
-        if pa and hasattr(pa, "update_phase_banner"):
-            pa.update_phase_banner(disp, ap_name)
-    except Exception:
-        pass
-
-"""
-DEPRECATED: Legacy phase hook system replaced by strict turn_structure + GameController.advance_step().
-All functions are inert no-ops retained for backward compatibility only.
-"""
-
-def register_phase_hook(*_, **__): pass
-def clear_phase_hooks(): pass
-def run_phase_hooks(*_, **__): pass
-# Export these for use in debug window and UI
-__all__ += [
-    "advance_phase",
-    "advance_step",
-    "set_phase",
-]
 
 def log_phase(controller):
     """
@@ -206,9 +179,30 @@ def log_phase(controller):
         phase = getattr(controller, "current_phase", "unknown")
         step = getattr(controller, "current_step", "unknown")
         log_msg = f"Phase: {phase}, Step: {step}, Active Player: {nm}"
-        print(log_msg)  # Replace with actual logging mechanism
+        print(log_msg)
     except Exception:
         pass
+
+# Remove duplicate log_phase and __all__ mutation, and define __all__ at the top.
+__all__ = [
+    "advance_phase",
+    "advance_step",
+    "set_phase",
+    "update_phase_ui",
+    "log_phase",
+    "OpeningTurnSkipper",
+    "PhaseAdvanceManager",
+    "CANON_PHASES",
+]
+
+"""
+DEPRECATED: Legacy phase hook system replaced by strict turn_structure + GameController.advance_step().
+All functions are inert no-ops retained for backward compatibility only.
+"""
+
+def register_phase_hook(*_, **__): pass
+def clear_phase_hooks(): pass
+def run_phase_hooks(*_, **__): pass
 
 # --- Merge from import time.py ---
 
@@ -339,3 +333,64 @@ def update_phase_ui(main_win):
         ap = getattr(main_win.game, 'active_player', 0)
         players = getattr(main_win.game, 'players', [])
         pname = players[ap].name if players and 0 <= ap < len(players) else "?"
+        # Optionally update UI banner if present
+        pa = getattr(main_win, "play_area", None)
+        if pa and hasattr(pa, "update_phase_banner"):
+            phase = getattr(main_win.game, "phase", "Beginning")
+            hl = _canon_phase(phase)
+            disp = _DISPLAY_NAMES.get(hl, hl)
+            pa.update_phase_banner(disp, pname)
+    except Exception:
+        pass
+    try:
+        ap = getattr(main_win.game, 'active_player', 0)
+        players = getattr(main_win.game, 'players', [])
+        pname = players[ap].name if players and 0 <= ap < len(players) else "?"
+        # Optionally update UI banner if present
+        pa = getattr(main_win, "play_area", None)
+        if pa and hasattr(pa, "update_phase_banner"):
+            phase = getattr(main_win.game, "phase", "Beginning")
+            hl = _canon_phase(phase)
+            disp = _DISPLAY_NAMES.get(hl, hl)
+            pa.update_phase_banner(disp, pname)
+    except Exception:
+        pass
+        disp = _DISPLAY_NAMES.get(hl, hl)
+        pa.update_phase_banner(disp, pname)
+    except Exception:
+        pass
+
+def init_turn_phase_state(controller):
+    """
+    Set up the phase and step for a new turn, using board/player state.
+    Only the very first turn for the starting player begins at precombat_main.
+    All subsequent turns (and all other players) begin at untap.
+    """
+    # Determine turn number and active player
+    turn_no = getattr(controller, "_turn_no", 1)
+    active_player = getattr(controller.game, "active_player", 0)
+    is_first_turn = (turn_no == 1)
+    is_first_player = (active_player == 0)
+    if is_first_turn and is_first_player:
+        phase = "precombat_main"
+        step = first_step_of_phase(phase)
+    else:
+        phase = "untap"
+        step = first_step_of_phase("beginning")
+    # Store canonical phase/step on controller for legacy code, but always use these helpers
+    controller._phase_state = {"phase": phase, "step": step}
+    # Optionally, update game object for UI
+    controller.current_phase = phase
+    controller.current_step = step
+    controller.visited_phases = set()
+
+def get_current_phase(controller):
+    # Always prefer canonical state
+    if hasattr(controller, "_phase_state"):
+        return controller._phase_state.get("phase")
+    return getattr(controller, "current_phase", None)
+
+def get_current_step(controller):
+    if hasattr(controller, "_phase_state"):
+        return controller._phase_state.get("step")
+    return getattr(controller, "current_step", None)

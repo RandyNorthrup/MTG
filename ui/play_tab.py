@@ -172,15 +172,20 @@ class LobbyWidget(QWidget):
         g = getattr(self.ctx, 'game', None)
         if not g:
             return
-        self.btn_add_ai.setEnabled(active and len(g.players) < 4)
-        self.btn_start.setEnabled(active and len(g.players) >= 1)
+        # Only allow 2 players max
+        self.btn_add_ai.setEnabled(active and len(g.players) == 1)
+        self.btn_start.setEnabled(active and len(g.players) == 2)
         self.btn_cancel.setEnabled(active)
         self.btn_create.setEnabled(not active)
         self.status_lbl.setText(
-            f"Waiting for players... ({len(g.players)}/4). Add AI or Start Game."
+            f"Waiting for players... ({len(g.players)}/2). Add AI or Start Game."
             if active else "No open matches. Press Create to start a local game."
         )
         self._render_players(active)
+        # Auto-start when 2 players joined
+        if active and len(g.players) == 2:
+            if hasattr(self.ctx, 'start_pending_match'):
+                self.ctx.start_pending_match()
 
     def _render_players(self, active: bool):
         if not active:

@@ -1,18 +1,34 @@
 import os
 import argparse
-from config import STARTING_LIFE
 from engine.game_state import GameState, PlayerState
 from engine.rules_engine import init_rules
 from engine.card_db import load_card_db, maybe_bootstrap_sql  # ADDED
+from engine.game_ids import generate_game_id, register_game_id  # ADDED
+
 try:
     from engine.card_fetch import set_sdk_online          # CHANGED: safe optional import
 except Exception:
     def set_sdk_online(_flag: bool):  # fallback no-op
         return
 
-from engine.deck_rules import build_default_deck_specs, collect_ai_player_ids
-from engine.game_ids import generate_game_id, register_game_id
+# Remove this import (causes ImportError):
+# from engine.deck_rules import build_default_deck_specs, collect_ai_player_ids
 
+# --- Inline the helpers here (or import from where they are actually defined) ---
+def build_default_deck_specs(auto_player_deck: str, auto_ai_deck: str, ai_enabled: bool):
+    """
+    Return default two-seat specs: local human + optional AI.
+    """
+    return [
+        ("You", auto_player_deck, False),
+        ("AI", auto_ai_deck, True if ai_enabled else False)
+    ]
+
+def collect_ai_player_ids(deck_specs, ai_enabled: bool):
+    """
+    Derive AI player id set from deck specs honoring global ai_enabled.
+    """
+    return {pid for pid, (_, _, ai_flag) in enumerate(deck_specs) if ai_flag and ai_enabled}
 
 def parse_args():
     ap = argparse.ArgumentParser(description="MTG Commander (Qt)")
@@ -162,12 +178,12 @@ def new_game(deck_specs=None, ai_enabled=True):
             print(f"[DECK][{name}] Load error: {e}")
             cards, commander = [], None
         ps = PlayerState(player_id=pid, name=name,
-                         life=STARTING_LIFE, library=cards, commander=commander)
+                         library=cards, commander=commander)  # REMOVED: life=STARTING_LIFE
         ps.source_path = path
         players.append(ps)
     game = GameState(players=players)
     game.setup()
-    init_rules(game)
+    init_rules(game)  # This now sets starting life
 
     # Defer opening hands (push any pre-drawn cards back)
     for pl in game.players:

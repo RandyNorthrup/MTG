@@ -285,10 +285,39 @@ class RulesEngine:
                     return perm
         return None
 
+    @staticmethod
+    def set_starting_life(game):
+        """
+        Set each player's starting life according to format.
+        Commander: 40, Two-Headed Giant: 30, Brawl: 25/30, Vanguard: 20+modifier, default: 20.
+        """
+        # Commander (default for this engine)
+        if hasattr(game, "players"):
+            n = len(game.players)
+            # Two-Headed Giant (teams of 2)
+            if getattr(game, "format", None) == "2HG" or (n == 4 and getattr(game, "teams", None)):
+                for p in game.players:
+                    p.life = 30
+            # Brawl (not implemented, but placeholder)
+            elif getattr(game, "format", None) == "BRAWL":
+                for p in game.players:
+                    p.life = 25 if n == 2 else 30
+            # Vanguard (not implemented, but placeholder)
+            elif getattr(game, "format", None) == "VANGUARD":
+                for p in game.players:
+                    p.life = 20 + getattr(p, "vanguard_life_mod", 0)
+            # Commander (default)
+            else:
+                for p in game.players:
+                    p.life = 40
+        # else: do nothing
+
 
 def init_rules(game):
     engine = RulesEngine(game)
     game.rules_engine = engine
+    # Set starting life for all players
+    RulesEngine.set_starting_life(game)
     # Register existing battlefield permanents
     for p in game.players:
         for perm in p.battlefield:

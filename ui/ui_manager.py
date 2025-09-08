@@ -3,9 +3,9 @@ from PySide6.QtWidgets import (QWidget, QMenu, QVBoxLayout, QDialog, QLabel, QPu
                                QListWidget, QListWidgetItem, QHBoxLayout, QMessageBox)
 from PySide6.QtGui import (QPainter, QPen, QColor, QPixmap, QMouseEvent, QPaintEvent)
 from PySide6.QtCore import Qt, QTimer, QRect, QPoint
-from config import CARD_W, CARD_H, HAND_HEIGHT, PADDING, ZOOM_W, ZOOM_H
 from image_cache import ensure_card_image
 from engine.mana import ManaPool, parse_mana_cost
+from ui.card_renderer import CARD_W, CARD_H, ZOOM_W, ZOOM_H, PADDING  # ADDED
 
 try:
     from shiboken6 import isValid as _q_is_valid
@@ -275,20 +275,11 @@ class PlayArea(QWidget):
                 p.save(); p.setClipRect(r); p.drawPixmap(r, scaled); p.restore()
                 p.setPen(QPen(QColor(15,15,18),2)); p.drawRoundedRect(r,6,6)
             else:
-                p.setPen(QPen(QColor(110,110,140),2)); p.setBrush(QColor(40,40,55))
+                p.setPen(QColor(110,110,140),2); p.setBrush(QColor(40,40,55))
                 p.drawRoundedRect(r,6,6)
         if size>max_show:
             p.setPen(QColor(230,230,235))
             p.drawText(battlefield_rect.left()+6, y+CARD_H+14, f"+{size-max_show}")
-            
-            
-    def _phase_hit_test(self, pt: QPoint):
-        bar = self._layout()["phase"]
-        if not bar.contains(pt): return None
-        phases = self._phase_sequence()
-        seg_w = bar.width()//len(phases)
-        idx = (pt.x() - bar.left())//seg_w
-        return phases[idx] if 0<=idx<len(phases) else None
 
     # ---------- Hand ----------
     def _draw_hand(self, p: QPainter, rect: QRect):
@@ -572,3 +563,15 @@ def _find_perm(game, card_id):
             if getattr(perm.card,'id',None)==card_id:
                 return perm
     return None
+
+def get_default_window_size():
+    """Return (width, height) for the main window."""
+    return (1280, 900)  # or whatever default you want
+    for perm in p.battlefield:
+            if getattr(perm.card,'id',None)==card_id:
+                return perm
+    return None
+
+def get_default_window_size():
+    """Return (width, height) for the main window."""
+    return (1280, 900)  # or whatever default you want

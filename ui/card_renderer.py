@@ -1,6 +1,12 @@
 from PySide6.QtGui import QPainter, QColor, QPen, QFont
 from PySide6.QtCore import QRect
-from config import CARD_W, CARD_H, ZOOM_W, ZOOM_H
+
+# Card dimension constants (local to card_renderer)
+CARD_W = 98
+CARD_H = 140
+ZOOM_W = 320
+ZOOM_H = 440
+PADDING = 16
 
 class CardRenderer:
     def __init__(self):
