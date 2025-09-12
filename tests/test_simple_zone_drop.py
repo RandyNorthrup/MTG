@@ -49,35 +49,59 @@ def test_zone_drop_handling():
         print("📋 Creating test zones...")
         zones = []
         
+        # Create a real API for testing
+        from ui.game_app_api import GameAppAPI
+        from engine.game_state import GameState, PlayerState
+        from engine.card_engine import Card
+        from engine.mana import ManaPool
+        
+        # Create minimal test game
+        forest = Card(id="test_card_123", name="Forest", types=["Land"], mana_cost=0)
+        player1 = PlayerState(0, "Player 1")
+        player1.hand = [forest]
+        player1.mana_pool = ManaPool()
+        player1.battlefield = []
+        
+        game = GameState(players=[player1])
+        
+        class MockMainWindow:
+            def __init__(self): self.logging_enabled = True
+        def new_game_factory(specs, ai_enabled=True): return game, []
+        class MockArgs:
+            def __init__(self): self.no_log = False
+                
+        api = GameAppAPI(MockMainWindow(), game, [], MockArgs(), new_game_factory)
+        print("✅ Created real API for testing")
+
         try:
-            # Test base zone widget
-            base_zone = ZoneWidget("test", "Test Zone", api=None)
+            # Test base zone widget with real API
+            base_zone = ZoneWidget("test", "Test Zone", api=api)
             zones.append(("base", base_zone))
-            print("✅ Created base zone widget")
+            print("✅ Created base zone widget with API")
         except Exception as e:
             print(f"❌ Failed to create base zone: {e}")
         
         try:
-            # Test battlefield zone
-            battlefield = BattlefieldZone("Test Player", api=None)
+            # Test battlefield zone with real API
+            battlefield = BattlefieldZone("Test Player", api=api)
             zones.append(("battlefield", battlefield))
-            print("✅ Created battlefield zone")
+            print("✅ Created battlefield zone with API")
         except Exception as e:
             print(f"❌ Failed to create battlefield zone: {e}")
         
         try:
-            # Test hand zone
-            hand = HandZone("Test Player", api=None)
+            # Test hand zone with real API
+            hand = HandZone("Test Player", api=api)
             zones.append(("hand", hand))
-            print("✅ Created hand zone")
+            print("✅ Created hand zone with API")
         except Exception as e:
             print(f"❌ Failed to create hand zone: {e}")
         
         try:
-            # Test graveyard zone
-            graveyard = GraveyardZone("Test Player", api=None)
+            # Test graveyard zone with real API  
+            graveyard = GraveyardZone("Test Player", api=api)
             zones.append(("graveyard", graveyard))
-            print("✅ Created graveyard zone")
+            print("✅ Created graveyard zone with API")
         except Exception as e:
             print(f"❌ Failed to create graveyard zone: {e}")
         

@@ -132,8 +132,9 @@ class ZoneWidget(QFrame):
         if card in self.cards:
             return  # Already in zone
             
-        # Create card widget using the card_widget module
-        card_widget = create_card_widget(card, QSize(100, 140), api=self.api, parent=self.cards_container)
+        # Create card widget using the card_widget module with proper location
+        card_widget = create_card_widget(card, QSize(100, 140), api=self.api, location=self.zone_name)
+        card_widget.setParent(self.cards_container)
         # Connect available signals
         if hasattr(card_widget, 'card_clicked'):
             card_widget.card_clicked.connect(lambda c: self._on_card_clicked(c))
@@ -405,7 +406,8 @@ class ZoneWidget(QFrame):
         """Handle drop to battlefield zone."""
         try:
             if self.api and hasattr(self.api, 'handle_card_drop_to_battlefield'):
-                return self.api.handle_card_drop_to_battlefield(card_data, self.zone_name)
+                # Let API auto-place the card in the correct battlefield zone
+                return self.api.handle_card_drop_to_battlefield(card_data)
             else:
                 print(f"⚠️  No API available for battlefield drop")
                 return False

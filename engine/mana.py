@@ -101,9 +101,17 @@ class ManaPool:
         return True
 
     def clear(self):
+        """Empty the mana pool completely."""
         for k in self.pool:
             self.pool[k] = 0
             self.sources[k] = []
+    
+    def empty_pool(self):
+        """Empty mana pool per CR 106.4 - happens at end of each step and phase."""
+        # In a real implementation, this would trigger mana burn in older rules
+        # Current rules: mana simply disappears
+        if any(self.pool[k] > 0 for k in self.pool):
+            self.clear()
 
     def tap_land_for_mana(self, land_perm, symbol: str):
         """

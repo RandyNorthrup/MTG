@@ -1,4 +1,3 @@
-from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
@@ -6,20 +5,28 @@ from typing import List, Dict, Optional
 from .card_engine import Card, Permanent, ActionResult
 from .stack import Stack, StackItem
 from .rules_engine import CommanderTracker
+from .mana import ManaPool
 
-# Ordered turn / phase list
+# MTG Comprehensive Rules 500 - Turn Structure
+# Proper phases and steps according to CR 500.1
 PHASES = [
+    # Beginning Phase (CR 502)
     "UNTAP", "UPKEEP", "DRAW",
-    "MAIN1",
-    "COMBAT_BEGIN", "COMBAT_DECLARE", "COMBAT_BLOCK", "COMBAT_DAMAGE", "COMBAT_END",
-    "MAIN2",
+    # First Main Phase (CR 505)
+    "PRECOMBAT_MAIN",
+    # Combat Phase (CR 506)
+    "BEGIN_COMBAT", "DECLARE_ATTACKERS", "DECLARE_BLOCKERS", "COMBAT_DAMAGE", "END_COMBAT",
+    # Second Main Phase (CR 505)
+    "POSTCOMBAT_MAIN",
+    # Ending Phase (CR 512)
     "END", "CLEANUP"
 ]
 
-# Auto steps (no player priority in this simplified engine)
-_AUTO_STEPS = {"UNTAP", "UPKEEP", "DRAW", "COMBAT_DAMAGE", "COMBAT_END", "CLEANUP"}
-# Interactive (priority) phases kept for reference / potential UI gating
-_INTERACTIVE_STEPS = {"MAIN1", "COMBAT_BEGIN", "COMBAT_DECLARE", "COMBAT_BLOCK", "MAIN2", "END"}
+# Steps that don't use the stack (CR 117.3a)
+_NO_PRIORITY_STEPS = {"UNTAP", "CLEANUP"}
+# Steps where players receive priority
+_PRIORITY_STEPS = {"UPKEEP", "DRAW", "PRECOMBAT_MAIN", "BEGIN_COMBAT", "DECLARE_ATTACKERS", 
+                   "DECLARE_BLOCKERS", "COMBAT_DAMAGE", "END_COMBAT", "POSTCOMBAT_MAIN", "END"}
 
 
 # ---------------- Player State ----------------
@@ -28,7 +35,7 @@ class PlayerState:
     player_id: int
     name: str
     life: int = 40
-    mana: int = 0
+    # Note: Simple mana counter for backwards compatibility - proper mana pool in mana_pool attribute
     library: List[Card] = field(default_factory=list)
     hand: List[Card] = field(default_factory=list)
     battlefield: List[Permanent] = field(default_factory=list)
@@ -37,6 +44,7 @@ class PlayerState:
     command: List[Card] = field(default_factory=list)
     commander: Optional[Card] = None
     commander_tracker: CommanderTracker = field(default_factory=CommanderTracker)
+    mana_pool: ManaPool = field(default_factory=ManaPool)
 
     def draw(self, n: int = 1):
         # Debug: Track if hands are unexpectedly empty
@@ -51,10 +59,20 @@ class PlayerState:
                 self.hand.append(self.library.pop())
 
     def add_mana(self, amount: int):
+        """Backwards compatibility - adds generic mana to pool."""
+        self.mana_pool.add('C', amount)  # Add to generic colorless mana
+        # Keep simple counter for backwards compatibility
         self.mana += amount
 
     def reset_mana(self):
+        """Reset both simple mana counter and mana pool."""
+        self.mana_pool.clear()
         self.mana = 0
+    
+    @property
+    def total_mana(self) -> int:
+        """Total mana available (for backwards compatibility)."""
+        return sum(self.mana_pool.pool.values())
 
     def find_playable(self) -> List[Card]:
         playable: List[Card] = []
@@ -132,19 +150,29 @@ class GameState:
     def next_phase(self):
         """
         Advance to next phase; automatically chain through non‑priority steps.
+        Implements proper mana pool emptying per CR 106.4.
         """
+        # Empty mana pools at end of current step/phase (CR 106.4)
+        self._empty_all_mana_pools()
+        
         while True:
             self.phase_index = (self.phase_index + 1) % len(PHASES)
             if self.phase_index == 0:
                 self._start_new_turn()
             phase = self.phase
             self._perform_phase_actions(phase)
-            if phase in _AUTO_STEPS:
+            # Continue through steps that don't use priority (CR 117.3a)
+            if phase in _NO_PRIORITY_STEPS:
                 continue
             break
+    
+    def _empty_all_mana_pools(self):
+        """Empty all players' mana pools (CR 106.4)."""
+        for player in self.players:
+            player.mana_pool.empty_pool()
 
     def ensure_progress(self):
-        if self.phase in _AUTO_STEPS:
+        if self.phase in _NO_PRIORITY_STEPS:
             self.next_phase()
 
     # ---- Core Actions ----

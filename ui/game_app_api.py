@@ -321,13 +321,18 @@ class GameAppAPI:
             print(f"Text: {card.text}")
     
     # --- Drag and Drop Handler Methods ---
-    def handle_card_drop_to_battlefield(self, card_data, zone_name):
-        """Handle a card being dropped onto the battlefield with comprehensive error handling."""
+    def handle_card_drop_to_battlefield(self, card_data, zone_name=None):
+        """Handle a card being dropped onto the battlefield with comprehensive error handling.
+        
+        The zone_name parameter is ignored - cards are automatically placed in the correct
+        battlefield zone based on their card type (creatures, lands, artifacts, etc.).
+        """
         
         try:
             # Get current player
             player = self.get_current_player()
             if not player or not hasattr(player, 'hand'):
+                print(f"❌ API: No current player or player has no hand")
                 return False
             
             # Find the target card
@@ -338,23 +343,31 @@ class GameAppAPI:
                     break
             
             if not target_card:
+                print(f"❌ API: Card {card_data} not found in player's hand")
                 return False
+            
+            # Get card name for logging
+            card_name = getattr(target_card, 'name', 'unknown card')
+            card_types = getattr(target_card, 'types', [])
+            
+            print(f"🎯 API: Attempting to play {card_name} (types: {card_types})")
             
             # Check if card can be played
             can_play, reason = self.can_play_card(target_card)
             if not can_play:
-                print(f"❌ Cannot play {getattr(target_card, 'name', 'card')}: {reason}")
+                print(f"❌ Cannot play {card_name}: {reason}")
                 return False
             
-            # Play the card
-            card_types = getattr(target_card, 'types', [])
+            # Play the card - let the game engine determine the correct placement
             if "Land" in card_types:
+                print(f"🌱 Playing land: {card_name}")
                 success = self._play_land_enhanced(target_card)
             else:
+                print(f"✨ Casting spell: {card_name}")
                 success = self._cast_spell_enhanced(target_card)
             
             if success:
-                print(f"✅ API: Card play successful, updating UI...")
+                print(f"✅ {card_name} played successfully - will be placed in appropriate battlefield zone")
                 
                 # Give the game state a moment to update
                 from PySide6.QtWidgets import QApplication
@@ -370,12 +383,14 @@ class GameAppAPI:
                 
                 return True
             else:
-                print(f"❌ API: Card play failed")
+                print(f"❌ API: Failed to play {card_name}")
             
             return False
                 
         except Exception as e:
-            print(f"❌ API ERROR: {e}")
+            print(f"❌ API ERROR in handle_card_drop_to_battlefield: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def handle_card_drop_to_hand(self, card_data):

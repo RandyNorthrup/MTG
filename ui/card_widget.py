@@ -179,13 +179,17 @@ class InteractiveCardWidget(QFrame):
     card_dropped = Signal(object, str, QPoint)
     ability_activated = Signal(object, str)
     
-    def __init__(self, card, size=QSize(100, 140), parent=None, api=None):
+    def __init__(self, card, size=QSize(100, 140), parent=None, api=None, location="hand"):
         super().__init__(parent)
         self.card = card
         self.api = api
         self.base_size = size
         self._current_scale = 1.0
         self._rotation_angle = 0.0
+        
+        # Location and dragging control
+        self.location = location  # "hand", "battlefield", "graveyard", etc.
+        self.can_be_dragged = location == "hand"  # Only hand cards can be dragged
         
         # State
         self.state = CardState.NORMAL
@@ -213,6 +217,12 @@ class InteractiveCardWidget(QFrame):
         self._setup_animations()
         self._setup_context_menu()
         
+        # Set initial cursor based on draggability
+        if self.can_be_dragged:
+            self.setCursor(Qt.OpenHandCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
+        
         # Hover timer
         self.hover_timer = QTimer()
         self.hover_timer.setSingleShot(True)
@@ -224,9 +234,16 @@ class InteractiveCardWidget(QFrame):
     def _setup_ui(self):
         """Setup the card UI."""
         # Clean card widget with just border and background
+        # Visual feedback for draggability
+        if self.can_be_dragged:
+            border_color = MTGTheme.BORDER_MEDIUM.name()
+        else:
+            # Slightly different border for battlefield/non-draggable cards
+            border_color = MTGTheme.BORDER_DARK.name()
+            
         self.setStyleSheet(f"""
             QFrame {{
-                border: 2px solid {MTGTheme.BORDER_MEDIUM.name()};
+                border: 2px solid {border_color};
                 border-radius: 8px;
                 background: {MTGTheme.BACKGROUND_LIGHT.name()};
             }}
@@ -323,6 +340,12 @@ class InteractiveCardWidget(QFrame):
     
     def paintEvent(self, event):
         """Custom paint with transformations."""
+        # Check if widget is still valid before processing
+        try:
+            self.rect()  # Quick validity check
+        except RuntimeError:
+            return
+            
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
@@ -340,7 +363,14 @@ class InteractiveCardWidget(QFrame):
         
         # Reset transform for child widgets
         painter.setTransform(QTransform())
-        super().paintEvent(event)
+        
+        try:
+            super().paintEvent(event)
+        except RuntimeError as e:
+            if "Internal C++ object" in str(e) and "already deleted" in str(e):
+                return
+            else:
+                raise
     
     def _draw_state_indicators(self, painter):
         """Draw visual state indicators."""
@@ -385,15 +415,34 @@ class InteractiveCardWidget(QFrame):
     # Event handlers
     def enterEvent(self, event):
         """Handle mouse enter."""
+        # Check if widget is still valid before processing
+        try:
+            self.isVisible()
+        except RuntimeError:
+            return
+            
         if not self.is_dragging:
             self.is_hovered = True
             self.card_hovered.emit(self.card, True)
             self._animate_scale(self.hover_scale)
             self.hover_timer.start(500)
-        super().enterEvent(event)
+            
+        try:
+            super().enterEvent(event)
+        except RuntimeError as e:
+            if "Internal C++ object" in str(e) and "already deleted" in str(e):
+                return
+            else:
+                raise
         
     def leaveEvent(self, event):
         """Handle mouse leave."""
+        # Check if widget is still valid before processing
+        try:
+            self.isVisible()
+        except RuntimeError:
+            return
+            
         self.is_hovered = False
         self.card_hovered.emit(self.card, False)
         self.hover_timer.stop()
@@ -403,10 +452,25 @@ class InteractiveCardWidget(QFrame):
         
         if not self.is_dragging:
             self._animate_scale(1.0)
-        super().leaveEvent(event)
+            
+        try:
+            super().leaveEvent(event)
+        except RuntimeError as e:
+            if "Internal C++ object" in str(e) and "already deleted" in str(e):
+                return
+            else:
+                raise
         
     def mousePressEvent(self, event):
         """Handle mouse press."""
+        # Check if widget is still valid before processing
+        try:
+            # Quick validity check - this will fail if C++ object is deleted
+            self.isVisible()
+        except RuntimeError:
+            # Widget has been deleted, ignore the event
+            return
+            
         if event.button() == Qt.LeftButton:
             self.mouse_pressed = True
             self.drag_start_pos = event.pos()
@@ -418,29 +482,67 @@ class InteractiveCardWidget(QFrame):
             self.card_right_clicked.emit(self.card, global_pos)
             self.context_menu.exec(global_pos)
             
-        super().mousePressEvent(event)
+        try:
+            super().mousePressEvent(event)
+        except RuntimeError as e:
+            # Widget was deleted during event processing
+            if "Internal C++ object" in str(e) and "already deleted" in str(e):
+                return  # Widget no longer exists, safe to exit
+            else:
+                raise  # Re-raise if it's a different error
         
     def mouseMoveEvent(self, event):
         """Handle mouse move."""
+        # Check if widget is still valid before processing
+        try:
+            self.isVisible()
+        except RuntimeError:
+            return
+            
         if (event.buttons() & Qt.LeftButton and self.mouse_pressed and
-            (event.pos() - self.drag_start_pos).manhattanLength() > self.drag_threshold):
+            (event.pos() - self.drag_start_pos).manhattanLength() > self.drag_threshold and
+            self.can_be_dragged):  # Only start drag if card can be dragged
             
             self._start_drag(event)
             
-        super().mouseMoveEvent(event)
+        try:
+            super().mouseMoveEvent(event)
+        except RuntimeError as e:
+            if "Internal C++ object" in str(e) and "already deleted" in str(e):
+                return
+            else:
+                raise
         
     def mouseReleaseEvent(self, event):
         """Handle mouse release."""
+        # Check if widget is still valid before processing
+        try:
+            self.isVisible()
+        except RuntimeError:
+            return
+            
         if event.button() == Qt.LeftButton:
             self.mouse_pressed = False
             
             if not self.is_dragging:
                 self.card_clicked.emit(self.card)
                 
-        super().mouseReleaseEvent(event)
+        try:
+            super().mouseReleaseEvent(event)
+        except RuntimeError as e:
+            if "Internal C++ object" in str(e) and "already deleted" in str(e):
+                return
+            else:
+                raise
         
     def mouseDoubleClickEvent(self, event):
         """Handle double-click."""
+        # Check if widget is still valid before processing
+        try:
+            self.isVisible()
+        except RuntimeError:
+            return
+            
         if event.button() == Qt.LeftButton:
             self.card_double_clicked.emit(self.card)
             
@@ -450,7 +552,13 @@ class InteractiveCardWidget(QFrame):
             elif self._can_tap_for_mana():
                 self._tap_for_mana()
                 
-        super().mouseDoubleClickEvent(event)
+        try:
+            super().mouseDoubleClickEvent(event)
+        except RuntimeError as e:
+            if "Internal C++ object" in str(e) and "already deleted" in str(e):
+                return
+            else:
+                raise
     
     def _start_drag(self, event):
         """Start drag operation."""
@@ -499,6 +607,14 @@ class InteractiveCardWidget(QFrame):
         except Exception as e:
             print(f"Drag operation failed: {e}")
             result = Qt.IgnoreAction
+        
+        # Handle drag result
+        if result == Qt.IgnoreAction:
+            print(f"🔄 Card '{getattr(self.card, 'name', 'Unknown')}' returned to hand - drop target not valid")
+        elif result == Qt.MoveAction:
+            print(f"✅ Card '{getattr(self.card, 'name', 'Unknown')}' successfully moved")
+        elif result == Qt.CopyAction:
+            print(f"📋 Card '{getattr(self.card, 'name', 'Unknown')}' copied")
         
         # Drag finished - safely clean up
         try:
@@ -575,6 +691,27 @@ class InteractiveCardWidget(QFrame):
         """Set blocking state."""
         self.is_blocking = blocking
         self.update()
+    
+    def set_location(self, location):
+        """Set card location and update dragging permissions."""
+        self.location = location
+        # Only hand cards can be dragged back to other zones
+        self.can_be_dragged = location == "hand"
+        
+        # Update visual feedback for non-draggable cards
+        if not self.can_be_dragged:
+            self.setCursor(Qt.ArrowCursor)  # Normal cursor
+        else:
+            self.setCursor(Qt.OpenHandCursor)  # Draggable cursor
+    
+    def set_draggable(self, draggable=True):
+        """Directly control whether card can be dragged."""
+        self.can_be_dragged = draggable
+        
+        if not self.can_be_dragged:
+            self.setCursor(Qt.ArrowCursor)
+        else:
+            self.setCursor(Qt.OpenHandCursor)
     
     def closeEvent(self, event):
         """Handle widget cleanup on close."""
@@ -712,6 +849,9 @@ class InteractiveCardWidget(QFrame):
     def _notify_drag_end(self):
         """Notify parent widgets about drag end."""
         try:
+            # Check if widget is still valid before processing
+            self.isVisible()
+            
             # Find the game board window
             parent = self.parent()
             while parent and not hasattr(parent, 'highlight_valid_drop_targets'):
@@ -719,6 +859,9 @@ class InteractiveCardWidget(QFrame):
             
             if parent and hasattr(parent, 'highlight_valid_drop_targets'):
                 parent.highlight_valid_drop_targets([], False)
+        except RuntimeError:
+            # Widget was deleted during drag operation - this is OK
+            return
         except Exception as e:
             print(f"Error notifying drag end: {e}")
 
@@ -837,9 +980,9 @@ class CardContainer(QScrollArea):
             event.acceptProposedAction()
 
 
-def create_card_widget(card, size=QSize(100, 140), api=None):
+def create_card_widget(card, size=QSize(100, 140), api=None, location="hand"):
     """Factory function to create a card widget."""
-    return InteractiveCardWidget(card, size, api=api)
+    return InteractiveCardWidget(card, size, api=api, location=location)
 
 
 def create_card_container(zone_name="Cards", allow_drops=True):

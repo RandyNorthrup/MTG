@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 import re
 
 @dataclass
@@ -16,8 +16,8 @@ class Card:
     color_identity: List[str] = field(default_factory=list)
     owner_id: int = -1
     controller_id: int = -1
-    tapped: bool = False  # ADDED: tap state for this card
-    orientation: int = 0  # ADDED: degrees (0 = untapped, 45 = tapped, 90 = untapped for UI)
+    # Note: Only permanents can be tapped per CR 400.3 - tap state moved to Permanent class
+    orientation: int = 0  # UI rotation (0 = untapped, 45 = tapped, 90 = untapped)
 
     #def __hash__(self) -> int:
         #return hash(self.id)
@@ -25,45 +25,48 @@ class Card:
     def is_type(self, t):
         return t in self.types
 
-    def tap(self):
-        """Tap this card: set tapped=True and rotate 45 degrees (for UI)."""
-        self.tapped = True
-        self.orientation = 45
-
-    def untap(self):
-        """Untap this card: set tapped=False and rotate to 90 degrees (for UI)."""
-        self.tapped = False
-        self.orientation = 90
-
-    def is_tapped(self):
-        return self.tapped
-
-    def can_tap_for_mana(self):
-        """Return True if this card is a land and can be tapped for mana."""
-        return self.is_type("Land") and not self.tapped
-
-    def can_tap_to_attack(self):
-        """Return True if this card is a creature and can attack (not tapped, not summoning sick)."""
-        return self.is_type("Creature") and not self.tapped and not getattr(self, "summoning_sick", False)
+    def set_orientation(self, degrees: int):
+        """Set UI orientation for visual feedback only."""
+        self.orientation = degrees
 
 @dataclass
 class Permanent:
+    """Represents a permanent on the battlefield (CR 110.1)"""
     card: Card
-    summoning_sick: bool = True
-    tapped: bool = False
-
+    summoning_sick: bool = True  # CR 302.6 - creatures have summoning sickness
+    tapped: bool = False  # CR 106.8 - only permanents can be tapped
+    damage_marked: int = 0  # CR 120.3 - damage marked on permanent
+    
     def tap(self):
-        """Tap this permanent and its card."""
-        self.tapped = True
-        self.card.tap()
+        """Tap this permanent (CR 701.21a)."""
+        if self.can_be_tapped():
+            self.tapped = True
+            self.card.set_orientation(45)  # UI feedback
 
     def untap(self):
-        """Untap this permanent and its card."""
+        """Untap this permanent (CR 701.21b)."""
         self.tapped = False
-        self.card.untap()
+        self.card.set_orientation(0)  # UI feedback
 
     def is_tapped(self):
-        return self.tapped or self.card.tapped
+        """Return True if this permanent is tapped."""
+        return self.tapped
+    
+    def can_be_tapped(self):
+        """Return True if this permanent can be tapped."""
+        return not self.tapped
+    
+    def can_tap_for_mana(self):
+        """Return True if this land can be tapped for mana."""
+        return (self.card.is_type("Land") and 
+                not self.tapped and 
+                not (self.summoning_sick and not self.card.is_type("Land")))
+    
+    def can_attack(self):
+        """Return True if this creature can attack (CR 508.1)."""
+        return (self.card.is_type("Creature") and 
+                not self.tapped and 
+                not self.summoning_sick)
 
 class Zones:
     LIBRARY = "library"

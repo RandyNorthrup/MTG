@@ -1,11 +1,11 @@
-# 🧙‍♂️ MTG Commander Game
+# 🧙‍♂️ MTG Commander Game Engine
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Qt](https://img.shields.io/badge/GUI-PySide6-green.svg)](https://pyside.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Rules Compliance](https://img.shields.io/badge/MTG%20Rules-96.8%25%20Compliant-green.svg)](#)
-[![Test Coverage](https://img.shields.io/badge/Tests-58%20Passing-brightgreen.svg)](#)
-[![Code Quality](https://img.shields.io/badge/Code%20Quality-Optimized-blue.svg)](#)
+[![Rules Compliance](https://img.shields.io/badge/MTG%20Rules-Enhanced-green.svg)](#)
+[![Test Coverage](https://img.shields.io/badge/Tests-Comprehensive-brightgreen.svg)](#)
+[![Code Quality](https://img.shields.io/badge/Code%20Quality-Production%20Ready-blue.svg)](#)
 
 A comprehensive **Magic: The Gathering Commander** game engine and desktop application built with Python and Qt. Features a sophisticated rules engine with **96.8% MTG rules compliance**, AI opponents, and a modern graphical interface.
 
@@ -47,33 +47,38 @@ A comprehensive **Magic: The Gathering Commander** game engine and desktop appli
 - **Python 3.8+** (recommended: Python 3.9+)
 - **Git** for cloning the repository
 
-### Installation
+### Installation & Setup
 
-1. **Clone the repository:**
+1. **Clone and setup environment:**
    ```bash
    git clone <repository-url>
    cd MTG
-   ```
-
-2. **Create virtual environment:**
-   ```bash
    python -m venv .venv
    
-   # On Windows:
+   # Windows
    .venv\Scripts\activate
    
-   # On macOS/Linux:
+   # macOS/Linux
    source .venv/bin/activate
    ```
 
-3. **Install dependencies:**
+2. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
 
-4. **Run the application:**
+3. **Run the application:**
    ```bash
    python main.py
+   ```
+
+4. **Advanced Usage:**
+   ```bash
+   # Custom deck loading
+   python main.py --deck You=data/decks/custom_deck.txt --deck AI=data/decks/draconic_domination.txt:AI
+   
+   # Update card database
+   python tools/scryfall_filter.py data/raw/default-cards.json data/cards/card_db_full.json --verbose --sort-name
    ```
 
 ### First Game Setup
@@ -171,18 +176,47 @@ Central coordinator managing:
 
 ## 🛠️ Development
 
-### Architecture Principles
+### Architecture Overview
 
-1. **Separation of Concerns**: UI, game logic, and data are cleanly separated
-2. **Event-Driven**: Components communicate through well-defined interfaces
-3. **Extensible**: Easy to add new cards, mechanics, and features
-4. **Testable**: Comprehensive test suite for game mechanics
+The MTG Commander Game follows a modular, layered architecture:
 
-### Adding New Features
+```
+├── 🎮 UI Layer (ui/)
+│   ├── Qt-based desktop interface
+│   ├── Game board and card rendering
+│   └── Player interaction components
+│
+├── 🎯 Game Logic Layer (engine/)  
+│   ├── Game state management
+│   ├── Rules engine and validation
+│   ├── Card mechanics and abilities
+│   ├── Combat and stack systems
+│   └── Mana and casting systems
+│
+├── 🤖 AI Layer (ai/)
+│   ├── AI player controllers
+│   └── Strategic decision making
+│
+└── 📊 Data Layer (data/)
+    ├── Card database
+    ├── Deck definitions
+    └── Game configuration
+```
 
-#### **New Card Mechanics**
+### Development Workflow
+
+#### Code Style Guidelines
+- **Type hints** for all function parameters and returns
+- **Docstrings** for all public methods and classes
+- **PEP 8** styling (use `black` and `isort`)
+- **Descriptive names** for variables and functions
+- **Small, focused functions** (single responsibility)
+
+#### Adding New Card Mechanics
+
+1. **Define the Ability Structure**
 ```python
-# Add to engine/abilities_system.py
+# In engine/abilities_system.py
 class NewKeywordAbility(KeywordAbility):
     def __init__(self, parameter):
         super().__init__("New Keyword")
@@ -193,17 +227,33 @@ class NewKeywordAbility(KeywordAbility):
         pass
 ```
 
-#### **New UI Components**
+2. **Add Parsing Logic**
 ```python
-# Create in ui/new_component.py
-from PySide6.QtWidgets import QWidget
-
-class NewComponent(QWidget):
-    def __init__(self, api):
-        super().__init__()
-        self.api = api  # GameAppAPI interface
-        self.setup_ui()
+# In engine/rules_engine.py
+def parse_new_keyword(text: str):
+    pattern = r'new keyword (\\d+)'
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match:
+        return NewKeywordAbility(int(match.group(1)))
+    return None
 ```
+
+3. **Add Tests**
+```python
+# In tests/test_card_mechanics.py
+def test_new_keyword_ability(self):
+    card = Card(id="test", name="Test Card", types=["Creature"], 
+                mana_cost=2, text="New keyword 3")
+    
+    abilities = parse_oracle_text(card.text)
+    self.assertEqual(len(abilities), 1)
+    self.assertIsInstance(abilities[0], NewKeywordAbility)
+```
+
+#### Debug Tools
+- **F9** in-game: Opens debug window showing game state
+- **Logging**: Enable with command line flags
+- **Test Suite**: Run comprehensive test suites
 
 ### Testing
 

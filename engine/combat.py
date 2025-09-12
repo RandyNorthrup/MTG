@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
-from .keywords import card_keywords  # NEW
+from typing import Dict, List
+from .keywords import card_keywords
 
 @dataclass
 class CombatState:

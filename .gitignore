@@ -121,16 +121,33 @@ data/decks/*.autosave
 data/decks/*.tmp
 data/decks/*.bak
 
-# Image caches
+# Image caches and runtime data
 data/images/cache/
 data/img_cache/
 image_cache/
 .cache/
 cache/
+__pycache__/
+*.pyc
+*.pyo
 
 # Runtime generated files
 data/game_ids.txt
 data/cache/
+
+# Application cache directories
+tools/__pycache__/
+debug/__pycache__/
+tests/__pycache__/
+engine/__pycache__/
+ui/__pycache__/
+ai/__pycache__/
+
+# Log files and debug output
+*.log
+debug_*.txt
+test_output_*.txt
+game_debug_*.json
 
 # Test and Debug Files
 # -----------------------------------------------------------------------------

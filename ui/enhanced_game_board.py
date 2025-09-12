@@ -524,11 +524,29 @@ class BattlefieldZone(QWidget):
             
     def refresh_display(self):
         """Refresh the battlefield display."""
-        # Clear existing widgets
+        # Clear existing widgets safely
         for i in reversed(range(self.cards_layout.count())):
             item = self.cards_layout.itemAt(i)
-            if item.widget():
-                item.widget().deleteLater()
+            if item and item.widget():
+                widget = item.widget()
+                try:
+                    # Disconnect all signals to prevent orphaned connections
+                    if hasattr(widget, 'card_clicked'):
+                        widget.card_clicked.disconnect()
+                    if hasattr(widget, 'card_right_clicked'):
+                        widget.card_right_clicked.disconnect()
+                    if hasattr(widget, 'card_hovered'):
+                        widget.card_hovered.disconnect()
+                    if hasattr(widget, 'card_drag_started'):
+                        widget.card_drag_started.disconnect()
+                except Exception:
+                    # Ignore disconnect errors - they're not critical
+                    pass
+                
+                # Remove from layout immediately
+                self.cards_layout.removeWidget(widget)
+                # Mark for deletion
+                widget.deleteLater()
                 
         if not self.cards:
             return
@@ -557,7 +575,8 @@ class BattlefieldZone(QWidget):
         # Get API from parent if available
         api = getattr(self, 'api', None) or getattr(self.parent(), 'api', None)
         
-        widget = create_card_widget(card, QSize(90, 120), api=api)
+        # Battlefield cards cannot be dragged back to hand
+        widget = create_card_widget(card, QSize(90, 120), api=api, location="battlefield")
         
         # Connect signals to board handlers
         widget.card_clicked.connect(self.card_clicked.emit)
@@ -609,31 +628,33 @@ class BattlefieldZone(QWidget):
             # Handle the card drop through API
             try:
                 if self.api and hasattr(self.api, 'handle_card_drop_to_battlefield'):
-                    print(f"🔍 DROP: Processing card drop via API...")
-                    result = self.api.handle_card_drop_to_battlefield(card_data, self.zone_name)
+                    print(f"🔍 DROP: Processing card drop via API (auto-placement)...")
+                    # Let the API automatically determine correct placement - don't specify zone
+                    result = self.api.handle_card_drop_to_battlefield(card_data)
                     
                     if result:
-                        print(f"✅ Card {card_data} played to {self.zone_name}")
+                        print(f"✅ Card {card_data} played successfully (auto-placed in correct zone)")
                         
-                        # Auto-refresh the entire game board to show the newly placed card
+                        # Schedule refresh for card placement
                         try:
-                            print(f"🔄 AUTO-REFRESH: Updating game board after card placement...")
+                            print(f"🔄 AUTO-REFRESH: Scheduling refresh after card placement...")
                             
-                            # Find the game board parent to trigger full refresh
+                            # Find the game board parent to schedule refresh
                             parent = self.parent()
-                            while parent and not hasattr(parent, 'refresh_game_state'):
+                            while parent and not hasattr(parent, 'schedule_refresh'):
                                 parent = parent.parent()
                             
-                            if parent and hasattr(parent, 'refresh_game_state'):
-                                print(f"🔄 AUTO-REFRESH: Found game board parent, refreshing...")
-                                parent.refresh_game_state()
-                            else:
-                                print(f"⚠️  AUTO-REFRESH: Could not find game board parent, trying API refresh...")
-                                # Fallback to API refresh
-                                self.api._force_immediate_ui_refresh()
+                            if parent and hasattr(parent, 'schedule_refresh'):
+                                parent.schedule_refresh("card_played")
+                                print(f"✅ AUTO-REFRESH: Refresh scheduled")
+                            elif self.api and hasattr(self.api, '_force_immediate_ui_refresh'):
+                                # Fallback to API refresh with delay
+                                from PySide6.QtCore import QTimer
+                                QTimer.singleShot(100, self.api._force_immediate_ui_refresh)
+                                print(f"✅ AUTO-REFRESH: API refresh scheduled")
                                 
                         except Exception as refresh_error:
-                            print(f"❌ AUTO-REFRESH: Failed to refresh game board: {refresh_error}")
+                            print(f"❌ AUTO-REFRESH: Failed to schedule refresh: {refresh_error}")
                             # Continue anyway - the card was played successfully
                         
                         event.acceptProposedAction()
@@ -690,13 +711,15 @@ class CommanderZone(QWidget):
         
     def refresh_display(self):
         """Refresh the commander display."""
-        # Clear existing widgets
+        # Clear existing widgets safely
         if self.card_container.layout():
             layout = self.card_container.layout()
             for i in reversed(range(layout.count())):
                 item = layout.itemAt(i)
-                if item.widget():
-                    item.widget().deleteLater()
+                if item and item.widget():
+                    widget = item.widget()
+                    layout.removeWidget(widget)
+                    widget.deleteLater()
         else:
             # Create layout if it doesn't exist
             QVBoxLayout(self.card_container)
@@ -809,11 +832,24 @@ class HandDisplay(QWidget):
         
     def refresh_display(self):
         """Refresh the hand display."""
-        # Clear existing widgets
+        # Clear existing widgets safely
         for i in reversed(range(self.cards_layout.count())):
             item = self.cards_layout.itemAt(i)
-            if item.widget():
-                item.widget().deleteLater()
+            if item and item.widget():
+                widget = item.widget()
+                try:
+                    # Disconnect signals to prevent orphaned connections
+                    if hasattr(widget, 'card_clicked'):
+                        widget.card_clicked.disconnect()
+                    if hasattr(widget, 'card_right_clicked'):
+                        widget.card_right_clicked.disconnect()
+                    if hasattr(widget, 'card_hovered'):
+                        widget.card_hovered.disconnect()
+                except Exception:
+                    pass
+                
+                self.cards_layout.removeWidget(widget)
+                widget.deleteLater()
                 
         if not self.cards:
             return
@@ -830,8 +866,8 @@ class HandDisplay(QWidget):
         # Get API from parent if available
         api = getattr(self, 'api', None) or getattr(self.parent(), 'api', None)
         
-        # Create interactive card widget for hand
-        widget = create_card_widget(card, QSize(70, 98), api=api)
+        # Create interactive card widget for hand - these can be dragged
+        widget = create_card_widget(card, QSize(70, 98), api=api, location="hand")
         
         # For opponent hands, modify to show card backs
         if self.show_card_backs:
@@ -980,10 +1016,15 @@ class EnhancedGameBoard(QMainWindow):
         
         self.setup_ui()
         
-        # Update timer
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.refresh_game_state)
-        self.update_timer.start(1000)  # Update every second
+        # Initialize event-based refresh system (no automatic timer)
+        self.refresh_pending = False
+        self.refresh_timer = QTimer()
+        self.refresh_timer.setSingleShot(True)
+        self.refresh_timer.timeout.connect(self._execute_pending_refresh)
+        
+        # Connect to game events for refresh triggers
+        if self.api:
+            self._connect_game_events()
         
     def setup_ui(self):
         """Setup the enhanced game board UI with proper MTG zone layout."""
@@ -1009,6 +1050,9 @@ class EnhancedGameBoard(QMainWindow):
         
         # Stack overlay - only visible when stack has items
         self.create_stack_overlay()
+        
+        # Enable drag and drop for the main window to catch invalid drops
+        self.setAcceptDrops(True)
         
     def create_zone_widget(self, label, zone_id, width=100, height=80):
         """Create a standardized zone widget with thin border."""
@@ -1515,22 +1559,27 @@ class EnhancedGameBoard(QMainWindow):
     def on_card_clicked(self, card):
         """Handle card clicks on battlefield."""
         self.log_message(f"Clicked: {getattr(card, 'name', 'Unknown Card')}")
+        self.schedule_refresh("card_clicked")
         
     def on_hand_card_clicked(self, card):
         """Handle hand card clicks."""
         self.log_message(f"Selected from hand: {getattr(card, 'name', 'Unknown Card')}")
+        self.schedule_refresh("hand_card_clicked")
         
     def on_opponent_hand_card_clicked(self, card):
         """Handle opponent hand card clicks."""
         self.log_message(f"Opponent hand card clicked (hidden)", "info")
+        # No refresh needed for opponent hand clicks
         
     def on_commander_clicked(self, card):
         """Handle commander card clicks."""
         self.log_message(f"Commander clicked: {getattr(card, 'name', 'Unknown Commander')}", "player")
+        self.schedule_refresh("commander_clicked")
         
     def on_graveyard_card_clicked(self, card):
         """Handle graveyard card clicks."""
         self.log_message(f"Graveyard card clicked: {getattr(card, 'name', 'Unknown Card')}", "info")
+        self.schedule_refresh("graveyard_card_clicked")
         
     def refresh_display(self):
         """Refresh all display elements from game state."""
@@ -1789,6 +1838,46 @@ class EnhancedGameBoard(QMainWindow):
         hex_color = hex_color.lstrip('#')
         return ', '.join(str(int(hex_color[i:i+2], 16)) for i in (0, 2, 4))
     
+    def _connect_game_events(self):
+        """Connect to game events that should trigger UI refresh."""
+        try:
+            # Connect to API events if available
+            if hasattr(self.api, 'card_played'):
+                self.api.card_played.connect(self.schedule_refresh)
+            if hasattr(self.api, 'phase_changed'):
+                self.api.phase_changed.connect(self.schedule_refresh)
+            if hasattr(self.api, 'turn_changed'):
+                self.api.turn_changed.connect(self.schedule_refresh)
+        except Exception as e:
+            print(f"Warning: Could not connect all game events: {e}")
+    
+    def schedule_refresh(self, reason="game_event"):
+        """Schedule a UI refresh to happen on the next event loop."""
+        if not self.refresh_pending:
+            self.refresh_pending = True
+            self.refresh_timer.start(50)  # 50ms delay to batch multiple changes
+            print(f"🔄 REFRESH: Scheduled refresh due to {reason}")
+    
+    def _execute_pending_refresh(self):
+        """Execute the pending refresh."""
+        self.refresh_pending = False
+        self.refresh_game_state()
+    
+    def on_card_played(self, card):
+        """Handle card being played - trigger refresh."""
+        self.schedule_refresh("card_played")
+    
+    def on_card_moved(self, card, from_zone, to_zone):
+        """Handle card moving between zones - trigger refresh."""
+        self.schedule_refresh(f"card_moved_{from_zone}_to_{to_zone}")
+    
+    def on_mouse_click(self, card=None):
+        """Handle mouse click - minimal refresh if needed."""
+        # Only refresh if there are actual state changes to display
+        if hasattr(self, 'game') and self.game:
+            # Check if game state has changed since last refresh
+            self.schedule_refresh("mouse_click")
+    
     def resizeEvent(self, event):
         """Handle window resize to reposition overlays."""
         super().resizeEvent(event)
@@ -1796,6 +1885,48 @@ class EnhancedGameBoard(QMainWindow):
         # Reposition stack overlay
         if hasattr(self, 'stack_overlay') and self.stack_overlay.isVisible():
             self.stack_overlay.move(self.width() - 270, 20)
+    
+    def dragEnterEvent(self, event):
+        """Handle drag enter on main window (catch-all for invalid drops)."""
+        if event.mimeData().hasFormat("application/mtg-card"):
+            # Accept the drag but we'll reject it in dropEvent
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dragMoveEvent(self, event):
+        """Handle drag move on main window."""
+        if event.mimeData().hasFormat("application/mtg-card"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dropEvent(self, event):
+        """Handle drop on main window (invalid drop zone - return card to hand)."""
+        try:
+            if event.mimeData().hasFormat("application/mtg-card"):
+                card_data = event.mimeData().data("application/mtg-card").data().decode()
+                card_name = "Unknown Card"
+                
+                # Try to get card name for better feedback
+                try:
+                    if self.api and self.game and self.game.players:
+                        for card in self.game.players[0].hand:
+                            if getattr(card, 'id', '') == card_data:
+                                card_name = getattr(card, 'name', 'Unknown Card')
+                                break
+                except Exception:
+                    pass
+                
+                print(f"🔄 Card '{card_name}' dropped on invalid area - returned to hand")
+                
+                # Always ignore drops on main window (card returns to hand automatically)
+                event.ignore()
+            else:
+                event.ignore()
+        except Exception as e:
+            print(f"Error handling main window drop: {e}")
+            event.ignore()
 
 def create_enhanced_game_board(api):
     """Create an enhanced game board widget."""
