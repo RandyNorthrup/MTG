@@ -1,4 +1,9 @@
-# Python bytecode and environments
+# =============================================================================
+# MTG Commander Game - .gitignore
+# =============================================================================
+
+# Python
+# -----------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *.pyo
@@ -6,62 +11,210 @@ __pycache__/
 *.pdb
 *.egg-info/
 *.egg
-*.log
+*.so
+*.whl
+.Python
 
-# IDE / tooling
+# Virtual Environments
+# -----------------------------------------------------------------------------
+.venv/
+venv/
+env/
+.env
+ENV/
+
+# IDE & Editors
+# -----------------------------------------------------------------------------
 .idea/
 .vscode/
 *.code-workspace
 *.swp
+*.swo
+*~
+.project
+.pydevproject
+*.sublime-project
+*.sublime-workspace
 
-# Logs & coverage
-*.log
-coverage/
-htmlcov/
-
-# OS
+# Operating System
+# -----------------------------------------------------------------------------
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+desktop.ini
 
-# Data (large / generated)
+# Logs & Debug Files
+# -----------------------------------------------------------------------------
+*.log
+debug_log_*.txt
+logs/
+*.debug
+
+# Testing & Coverage
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Test Results & Reports
+test_results/
+*_test_results.txt
+*_test_output.txt
+test_*.log
+testing_*.log
+
+# Type Checking
+# -----------------------------------------------------------------------------
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Documentation
+# -----------------------------------------------------------------------------
+docs/_build/
+.readthedocs.yml
+
+# Build & Distribution
+# -----------------------------------------------------------------------------
+build/
+dist/
+*.spec
+*.egg-info/
+
+# Qt & GUI
+# -----------------------------------------------------------------------------
+*.qmlc
+*.jsc
+*.pro.user
+*.pro.user.*
+*.qbs.user
+*.qbs.user.*
+*.moc
+*.moc.cpp
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+QtCreator.ini
+
+# Game Data & Cache
+# -----------------------------------------------------------------------------
+# Large card databases
 data/cards/cards.db
 data/cards/card_db_full.json
 data/cards/card_db.json.bak
 data/cards/card_db_full.json.bak
+
+# Deck backups and temporary files  
 data/decks/*.autosave
 data/decks/*.tmp
+data/decks/*.bak
+
+# Image caches
 data/images/cache/
-.cache/
-.cache/*
-.venv/
-# Cache (runtime)
-cache/
 data/img_cache/
-
-# Type / test cache
-.pytest_cache/
-.mypy_cache/
-
-# Runtime generated game id registry
-data/game_ids.txt
-
-# Qt + build cache
-*.qmlc
-*.jsc
-build/
-dist/
-*.spec
-
-# Virtual environments
-# venv/
-env/
-
-# App runtime artifacts
-data/cache/
-logs/
-
-# Image cache (if generated)
 image_cache/
+.cache/
+cache/
 
-# Documentation
-docs/
+# Runtime generated files
+data/game_ids.txt
+data/cache/
+
+# Test and Debug Files
+# -----------------------------------------------------------------------------
+# Test output files
+test_*.py.bak
+test_output_*.txt
+debug_*.json
+game_state_*.json
+
+# Comprehensive test artifacts
+*_REPORT.md.bak
+*_compliance_*.txt
+*_test_summary.txt
+
+# Application Runtime
+# -----------------------------------------------------------------------------
+*.pid
+*.sock
+celerybeat-schedule
+celerybeat.pid
+
+# Security & Configuration
+# -----------------------------------------------------------------------------
+.env
+*.pem
+*.key
+config.ini
+secrets.json
+
+# Temporary Files
+# -----------------------------------------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.orig
+*~
+
+# IDE and Editor Generated Files
+# -----------------------------------------------------------------------------
+# VSCode specific
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+.vscode/extensions.json
+
+# PyCharm specific
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/usage.statistics.xml
+.idea/dictionaries/
+.idea/shelf/
+
+# Vim/Neovim
+*.swp
+*.swo
+*~
+Session.vim
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Development Environment
+# -----------------------------------------------------------------------------
+# Environment variables and secrets
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Local configuration overrides
+local_config.py
+local_settings.py
+dev_config.json
+
+# Profiling and Performance
+profile_*.txt
+performance_*.json
+*.prof
+*.pstats

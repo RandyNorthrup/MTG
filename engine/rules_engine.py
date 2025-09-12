@@ -5,9 +5,7 @@ from engine.keywords import (
     TriggerEvent, ActivatedAbility, StaticBuffAbility
 )
 from engine.mana import ManaPool, parse_mana_cost  # already correct import for mana/mana pool
-from engine.phase_hooks import (
-    advance_phase, advance_step, set_phase, update_phase_ui, log_phase
-)
+# Phase hooks imports removed - not used in rules engine core logic
 
 # Regex patterns (very small subset)
 _PAT_ETB = re.compile(r'^\s*when\s+.*?enters the battlefield,\s*(.+)$', re.IGNORECASE)
@@ -186,7 +184,8 @@ class RulesEngine:
         evt = TriggerEvent(source_card_id=source_card.id, ability=ability, context=context)
         self.trigger_queue.append(evt)
         if getattr(self.game, 'debug_rules', False):
-            print(f"[RULES] Queued {ability.trigger}: {source_card.name} -> {getattr(ability,'effect_text','')}")
+            # Trigger queued (debug print removed)
+            pass
 
     def process_trigger_queue(self, limit: int = 16):
         """
@@ -202,11 +201,13 @@ class RulesEngine:
                 evt = self.trigger_queue.pop(0)
                 card = self._find_card(evt.source_card_id)
                 if getattr(self.game, 'debug_rules', False):
-                    print(f"[RULES][RESOLVE] {evt.ability.trigger} from {getattr(card,'name','?')} :: {getattr(evt.ability,'effect_text','')}")
+                    # Trigger resolving (debug print removed)
+                    pass
                 # Future: translate effect_text into actions.
                 count += 1
             if count == limit and self.trigger_queue:
-                print("[RULES] Trigger resolution limit reached; remaining queued.")
+                # Trigger resolution limit reached; remaining queued (debug print removed)
+                pass
         finally:
             self.processing = False
 
@@ -230,7 +231,8 @@ class RulesEngine:
     def start_activation(self, controller_id, card, ability: ActivatedAbility):
         if not self.can_activate(controller_id, card, ability):
             if getattr(self.game,'debug_rules',False):
-                print(f"[RULES] Cannot activate {card.name}")
+                # Cannot activate ability (debug print removed)
+                pass
             return False
         if ability.needs_target:
             self.pending_activation = (controller_id, card, ability)

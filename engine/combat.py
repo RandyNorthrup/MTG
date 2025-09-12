@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Optional
 from .keywords import card_keywords  # NEW
 
 @dataclass

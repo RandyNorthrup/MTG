@@ -39,6 +39,13 @@ class PlayerState:
     commander_tracker: CommanderTracker = field(default_factory=CommanderTracker)
 
     def draw(self, n: int = 1):
+        # Debug: Track if hands are unexpectedly empty
+        if hasattr(self, '_debug_expected_hand_size'):
+            expected = getattr(self, '_debug_expected_hand_size', 0)
+            if len(self.hand) != expected:
+                # Hand size debug check (debug print removed)
+                pass
+        
         for _ in range(n):
             if self.library:
                 self.hand.append(self.library.pop())
@@ -87,7 +94,7 @@ class GameState:
             if p.commander:
                 p.command.append(p.commander)
                 p.commander.is_commander = True
-            p.draw(7)
+            # Don't draw opening hands here - let the controller handle it at proper timing
             self.land_played_this_turn[p.player_id] = False
 
     @property
