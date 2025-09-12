@@ -45,7 +45,7 @@ def _deck_specs_from_args(arg_list):
         return specs
     for spec in arg_list:
         if '=' not in spec:
-            print(f"[ARGS] Ignored malformed --deck '{spec}'")
+            # Ignored malformed --deck specification (debug print removed)
             continue
         name, rest = spec.split('=', 1)
         ai_flag = False
@@ -54,7 +54,8 @@ def _deck_specs_from_args(arg_list):
             path, tag = rest.rsplit(':', 1)
             ai_flag = (tag.upper() == 'AI')
         if not os.path.exists(path):
-            print(f"[ARGS] Deck file not found: {path}")
+            # Deck file not found (debug print removed)
+            pass
         specs.append((name, path, ai_flag))
     return specs
 
@@ -175,7 +176,7 @@ def new_game(deck_specs=None, ai_enabled=True):
         try:
             cards, commander = _load_deck(path, pid)   # CHANGED
         except Exception as e:
-            print(f"[DECK][{name}] Load error: {e}")
+            # Deck load error (debug print removed)
             cards, commander = [], None
         ps = PlayerState(player_id=pid, name=name,
                          library=cards, commander=commander)  # REMOVED: life=STARTING_LIFE
@@ -185,11 +186,8 @@ def new_game(deck_specs=None, ai_enabled=True):
     game.setup()
     init_rules(game)  # This now sets starting life
 
-    # Defer opening hands (push any pre-drawn cards back)
-    for pl in game.players:
-        if getattr(pl, 'hand', None) and pl.hand:
-            pl.library = list(pl.hand) + pl.library
-            pl.hand.clear()
+    # Set flag so mulligan system knows to run, but don't clear the already-drawn hands
+    # The mulligan system will handle the hands properly
     setattr(game, '_opening_hands_deferred', True)
     ai_ids = collect_ai_player_ids(deck_specs, ai_enabled)
     return game, ai_ids

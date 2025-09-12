@@ -23,7 +23,7 @@ class EventBus:
                 try:
                     cb(**data)
                 except Exception as ex:
-                    print(f"[EVENT][{evt}][ERR] {ex}")
+                    # Event handler error (debug print removed)
             count += 1
 
     # --- Advanced event helpers ---

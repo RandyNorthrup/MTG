@@ -148,7 +148,8 @@ def repair_cache():
                 _safe_remove(fp)
                 removed += 1
     if removed:
-        print(f"[IMG-CACHE] Pruned {removed} corrupt image file(s).")
+        # Pruned corrupt image files (debug print removed)
+        pass
 
 def init_image_cache(qt_parent=None, interval_sec: int = CLEAN_INTERVAL):
     """
@@ -175,9 +176,4 @@ def teardown_cache():
         cleanup_cache(force=True)
         shutil.rmtree(SESSION_DIR, ignore_errors=True)
     except Exception:
-        pass
-        cleanup_cache(force=True)
-        shutil.rmtree(SESSION_DIR, ignore_errors=True)
-    except Exception:
-        pass
         pass

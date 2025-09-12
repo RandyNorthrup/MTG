@@ -60,7 +60,7 @@ class ContinuousEngine:
             try:
                 eff.fn(self.game)
             except Exception as ex:
-                print(f"[EFFECT][ERR] {ex}")
+                # Continuous effect error (debug print removed)
 
     def _apply_static_effect(self, source_card, ability):
         # StaticBuffAbility: power/toughness buffs, keyword grants, etc.

@@ -11,6 +11,7 @@ class Card:
     power: Optional[int] = None
     toughness: Optional[int] = None
     text: str = ""
+    mana_cost_str: str = ""  # ADDED: string representation of mana cost
     is_commander: bool = False
     color_identity: List[str] = field(default_factory=list)
     owner_id: int = -1

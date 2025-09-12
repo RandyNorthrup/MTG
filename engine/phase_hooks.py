@@ -111,6 +111,13 @@ def advance_phase(controller):
     controller.current_phase = _PHASE_ORDER[next_idx]
     if hasattr(controller, "current_step"):
         controller.current_step = first_step_of_phase(controller.current_phase)
+    
+    # Execute phase-specific actions
+    _execute_phase_actions(controller, controller.current_phase)
+    
+    # Refresh UI after phase change
+    _refresh_ui_after_phase_change(controller)
+    
     update_phase_ui(controller)
     log_phase(controller)
 
@@ -118,12 +125,17 @@ def advance_step(controller):
     """
     Advance to the next step (or phase if no steps).
     """
+    old_phase = getattr(controller, "current_phase", "none")
+    old_step = getattr(controller, "current_step", "none")
+    
     if hasattr(controller, "current_phase") and hasattr(controller, "current_step"):
         nxt = next_flat_step(controller.current_phase, controller.current_step)
         if nxt is None:
             advance_phase(controller)
         else:
             controller.current_phase, controller.current_step = nxt
+            # Execute step-specific actions
+            _execute_phase_actions(controller, controller.current_step)
         update_phase_ui(controller)
         log_phase(controller)
     else:
@@ -138,10 +150,180 @@ def set_phase(controller, phase_name):
         controller.current_phase = canon
         if hasattr(controller, "current_step"):
             controller.current_step = first_step_of_phase(canon)
+        
+        # Execute phase-specific actions
+        _execute_phase_actions(controller, canon)
+        
         update_phase_ui(controller)
         log_phase(controller)
 
 CANON_PHASES = tuple(_PHASE_ORDER)
+
+def _refresh_ui_after_phase_change(controller):
+    """
+    Refresh the UI after a phase changes to update phase display.
+    """
+    try:
+        # Get the API reference that was stored during controller creation
+        api = getattr(controller, '_api_ref', None)
+        
+        if api and hasattr(api, 'board_window') and api.board_window:
+            # Update phase display in board window
+            if hasattr(api.board_window, 'refresh_phase'):
+                api.board_window.refresh_phase()
+                
+            # Also trigger general UI update
+            if hasattr(api, '_phase_ui'):
+                api._phase_ui()
+                
+    except Exception as e:
+        pass
+
+def _refresh_ui_after_draw(controller):
+    """
+    Refresh the UI after a card is drawn to show the updated hand and library counts.
+    """
+    try:
+        # Get the API reference that was stored during controller creation
+        api = getattr(controller, '_api_ref', None)
+        
+        if api:
+            # Force full refresh of all UI elements
+            if hasattr(api, 'board_window') and api.board_window:
+                # Refresh the board window's play area to show updated hand
+                if hasattr(api.board_window, 'play_area'):
+                    # Ensure board window play area has the latest game reference
+                    if hasattr(api.board_window.play_area, 'set_game'):
+                        api.board_window.play_area.set_game(api.game)
+                    # Force a complete refresh of the play area
+                    api.board_window.play_area.update()
+                    # Also trigger playables update
+                    if hasattr(api.board_window.play_area, '_update_playables'):
+                        api.board_window.play_area._update_playables()
+                    # Force refresh of the entire board display
+                    if hasattr(api.board_window.play_area, 'refresh_board'):
+                        api.board_window.play_area.refresh_board()
+                        
+                # Update phase display in board window
+                if hasattr(api.board_window, 'refresh_phase'):
+                    api.board_window.refresh_phase()
+                    
+                # Force a complete window update
+                api.board_window.update()
+                    
+            # Main window no longer has a play area - only dedicated board window is used
+                    
+            # Also trigger phase UI update
+            if hasattr(api, '_phase_ui'):
+                api._phase_ui()
+                
+    except Exception as e:
+        pass
+
+def _execute_phase_actions(controller, phase_name):
+    """
+    Execute the game logic associated with entering a specific phase/step.
+    """
+    if not hasattr(controller, "game") or not controller.game:
+        return
+    
+    game = controller.game
+    active_player_id = getattr(game, "active_player", 0)
+    
+    try:
+        # Map phase/step names to actions
+        phase_canon = _canon_phase(phase_name)
+        
+        if phase_canon == "untap":
+            # Untap all permanents for active player
+            if hasattr(game, "players") and game.players:
+                active_player = game.players[active_player_id]
+                for perm in active_player.battlefield:
+                    if hasattr(perm, "tapped"):
+                        perm.tapped = False
+                # Reset mana
+                if hasattr(active_player, "reset_mana"):
+                    active_player.reset_mana()
+                    
+        elif phase_canon == "draw":
+            # Active player draws a card (skip on first turn for starting player)
+            if hasattr(game, "players") and game.players:
+                active_player = game.players[active_player_id]
+                # Check if this is the first turn and starting player
+                turn_num = getattr(game, "turn", 1)
+                is_first_turn = turn_num == 1
+                is_starting_player = active_player_id == getattr(controller, "skip_first_draw_player", None)
+                
+                # Skip first draw only for starting player on turn 1 (MTG rule)
+                should_skip_draw = is_first_turn and is_starting_player and not getattr(controller, "skip_first_draw_used", False)
+                
+                # Draw step logic
+                
+                if should_skip_draw:
+                    controller.skip_first_draw_used = True
+                else:
+                    # Draw the card
+                    if hasattr(active_player, "draw") and hasattr(active_player, "library") and active_player.library:
+                        hand_before = len(active_player.hand)
+                        library_before = len(active_player.library)
+                        active_player.draw(1)
+                        
+                        # Card draw completed successfully
+                        
+                        # Force immediate and complete UI refresh after draw
+                        try:
+                            api = getattr(controller, '_api_ref', None)
+                            if api:
+                                # Update all UI components immediately
+                                if hasattr(api, 'board_window') and api.board_window:
+                                    # Refresh phase display
+                                    if hasattr(api.board_window, 'refresh_phase'):
+                                        api.board_window.refresh_phase()
+                                    # Refresh play area completely
+                                    if hasattr(api.board_window, 'play_area'):
+                                        play_area = api.board_window.play_area
+                                        # Set the updated game state
+                                        play_area.game = controller.game
+                                        # Force complete repaint
+                                        play_area.force_refresh()
+                                        # Process all pending UI events
+                                        from PySide6.QtWidgets import QApplication
+                                        QApplication.processEvents()
+                        except Exception as e:
+                            print(f"[UI REFRESH ERROR] {e}")
+                        
+                        _refresh_ui_after_draw(controller)
+                        
+                # Automatically advance to main phase after draw step (no pause)
+                from PySide6.QtCore import QTimer
+                def auto_advance_to_main():
+                    try:
+                        # Advance to precombat main phase
+                        controller.current_phase = "precombat_main"
+                        controller.current_step = "main1"
+                        _execute_phase_actions(controller, "precombat_main")
+                        update_phase_ui(controller)
+                        log_phase(controller)
+                    except Exception as e:
+                        pass
+                
+                # Use a small delay to ensure UI updates are processed first
+                QTimer.singleShot(100, auto_advance_to_main)
+                    
+        elif phase_canon == "cleanup":
+            # Cleanup step actions
+            if hasattr(game, "players") and game.players:
+                for player in game.players:
+                    # Reset damage on permanents
+                    for perm in player.battlefield:
+                        if hasattr(perm, "damage"):
+                            perm.damage = 0
+                    # Reset mana pools
+                    if hasattr(player, "reset_mana"):
+                        player.reset_mana()
+                        
+    except Exception as e:
+        pass
 
 def update_phase_ui(host):
     """
@@ -179,7 +361,7 @@ def log_phase(controller):
         phase = getattr(controller, "current_phase", "unknown")
         step = getattr(controller, "current_step", "unknown")
         log_msg = f"Phase: {phase}, Step: {step}, Active Player: {nm}"
-        print(log_msg)
+        # Phase log message (debug print removed)
     except Exception:
         pass
 

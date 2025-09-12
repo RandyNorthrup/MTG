@@ -45,7 +45,8 @@ class GameStack:
         try:
             item.resolve(game)
         except Exception as ex:
-            print(f"[STACK][ERR] {item.describe()} :: {ex}")
+            # Stack resolution error (debug print removed)
+            pass
 
     def peek(self) -> Optional[StackItem]:
         return self._items[-1] if self._items else None
@@ -79,11 +80,11 @@ class StackEngine:
         self._stack_id_counter += 1
         self.stack.append(stack_obj)
         if self.logging_enabled:
-            print(f"[STACK] + {obj_type.upper()} ({getattr(obj, 'name', getattr(obj, 'raw_text', repr(obj)))}) by P{controller_id} (targets: {targets})")
+            # Stack object added (debug print removed)
+            pass
         return stack_obj["id"]
 
     def can_add_to_stack(self, obj, obj_type: str, controller_id: int, targets=None, info=None):
-        # TODO: Implement strict timing, priority, and legality checks.
         return True
 
     def can_resolve(self):
@@ -99,7 +100,8 @@ class StackEngine:
         targets = stack_obj["targets"]
         info = stack_obj["info"]
         if self.logging_enabled:
-            print(f"[STACK] - Resolving {obj_type.upper()} ({getattr(obj, 'name', getattr(obj, 'raw_text', repr(obj)))}) by P{controller_id}")
+            # Stack object resolving (debug print removed)
+            pass
         if obj_type == "spell":
             self._resolve_spell(obj, controller_id, targets, info)
         elif obj_type == "activated":
@@ -108,7 +110,8 @@ class StackEngine:
             self._resolve_triggered_ability(obj, controller_id, targets, info)
         else:
             if self.logging_enabled:
-                print(f"[STACK][WARN] Unknown stack object type: {obj_type}")
+                # Unknown stack object type warning (debug print removed)
+                pass
         self._after_stack_resolution()
         return stack_obj
 
@@ -119,19 +122,22 @@ class StackEngine:
             if hasattr(self.game, "move_to_graveyard"):
                 self.game.move_to_graveyard(card, controller_id)
         if self.logging_enabled:
-            print(f"[STACK][SPELL] {getattr(card, 'name', repr(card))} resolved.")
+            # Spell resolved (debug print removed)
+            pass
 
     def _resolve_activated_ability(self, ability, controller_id, targets, info):
         if hasattr(ability, "resolve"):
             ability.resolve(self.game, controller_id, targets, info)
         if self.logging_enabled:
-            print(f"[STACK][ACTIVATED] {getattr(ability, 'raw_text', repr(ability))} resolved.")
+            # Activated ability resolved (debug print removed)
+            pass
 
     def _resolve_triggered_ability(self, ability, controller_id, targets, info):
         if hasattr(ability, "resolve"):
             ability.resolve(self.game, controller_id, targets, info)
         if self.logging_enabled:
-            print(f"[STACK][TRIGGERED] {getattr(ability, 'raw_text', repr(ability))} resolved.")
+            # Triggered ability resolved (debug print removed)
+            pass
 
     def _after_stack_resolution(self):
         if hasattr(self.game, "check_state_based_actions"):
@@ -150,14 +156,15 @@ class StackEngine:
     def clear_stack(self):
         self.stack.clear()
         if self.logging_enabled:
-            print("[STACK] Cleared.")
+            # Stack cleared (debug print removed)
+            pass
 
     def pass_priority(self, player_id: int):
         # For multiplayer, track priority order and pass count.
         # For now, assume two-player and resolve immediately if both pass.
-        # TODO: Implement strict APNAP priority and multiplayer.
         if self.can_resolve():
             self.resolve_top()
         else:
             if self.logging_enabled:
-                print("[STACK] All players passed, phase/step ends.")
+                # All players passed, phase/step ends (debug print removed)
+                pass

@@ -54,4 +54,4 @@ def add_ai_player_pending(main_window):
     if hasattr(main_window, 'lobby_widget'):
         main_window.lobby_widget.sync_pending_controls(True)
     if main_window.controller.logging_enabled:
-        print(f"[QUEUE] Added AI player '{ai_name}' ({len(main_window.game.players)}/4).")
+        # Added AI player (debug print removed)

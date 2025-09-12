@@ -1,42 +1,54 @@
-import os, time, random
-from typing import Callable, Dict, Iterable
-from engine.mana import parse_mana_cost
-from image_cache import ensure_card_image
-from engine.game_state import GameState, PlayerState
+"""MTG Game Controller - Core game flow and state management."""
+
+import os
+import random
+from typing import Dict, Iterable
+
 from ai.basic_ai import BasicAI
-from engine.rules_engine import init_rules
-from ai_players.ai_player_simple import enhance_ai_controllers  # CHANGED
+from ai_players.ai_player_simple import enhance_ai_controllers
+from engine.game_state import GameState
+from engine.mana import ManaPool, parse_mana_cost
 from engine.phase_hooks import (
-    PHASE_SEQUENCE,
-    PHASE_STEPS,
-    first_step_of_phase,
-    next_flat_step,
-    advance_phase,
     advance_step,
+    get_current_phase,
+    get_current_step,
+    init_turn_phase_state,
     set_phase,
-    update_phase_ui,
-    log_phase,
-    init_turn_phase_state,   # ADDED: new helper for phase state init
-    get_current_phase,       # ADDED: query phase from game/board state
-    get_current_step,        # ADDED: query step from game/board state
 )
-from engine.stack import StackEngine  # ADDED
+from engine.stack import StackEngine
 
 class GameController:
+    """Core game controller that manages MTG game flow and state.
+    
+    Separates game logic from UI, handling:
+    - Game initialization and flow control
+    - Turn/phase management
+    - Player actions (casting, land plays, combat)
+    - AI opponent coordination
+    - Stack and priority management
+    
+    UI components should call enter_match() to start games and delegate
+    key actions like phase advancement through this controller.
     """
-    Decouples play logic from MainWindow UI.
-    UI should:
-      - call enter_match() when user starts game
-      - call tick(refresh_callable) from a QTimer
-      - delegate key actions (advance phase, space key, etc.)
-    """
+    
     def __init__(self, game: GameState, ai_ids: Iterable[int], *, logging_enabled: bool):
+        """Initialize game controller.
+        
+        Args:
+            game: The GameState instance to control
+            ai_ids: Player IDs that should be controlled by AI
+            logging_enabled: Whether to enable debug logging
+        """
         self.game = game
         self.logging_enabled = logging_enabled
-        self.ai_controllers: Dict[int, BasicAI] = {pid: BasicAI(pid=pid) for pid in ai_ids}
-        enhance_ai_controllers(self.game, self.ai_controllers)  # CHANGED
+        
+        # Initialize AI controllers
+        self.ai_controllers: Dict[int, BasicAI] = {
+            pid: BasicAI(pid=pid) for pid in ai_ids
+        }
+        enhance_ai_controllers(self.game, self.ai_controllers)
 
-        # Flow state
+        # Game flow state
         self.in_game = False
         self.first_player_decided = False
         self.opening_hands_drawn = False
@@ -44,48 +56,40 @@ class GameController:
         self.skip_first_draw_used = False
         self._game_flow_started = False
 
-        # Turn structure state
-        # Remove direct phase/step state, use phase_hooks for all phase/step state
-        # self.current_phase: str = PHASE_SEQUENCE[0]
-        # self.current_step: str = first_step_of_phase(self.current_phase)
-        # self.visited_phases: set[str] = set()
-        # Instead, initialize phase state via phase_hooks:
+        # Initialize phase management
         init_turn_phase_state(self)
+        
+        # Initialize stack engine for spell/ability resolution
+        self.stack_engine = StackEngine(self.game, logging_enabled=logging_enabled)
 
-        # ---------- Strict Stack Mechanics ----------
-        self.stack_engine = StackEngine(self.game, logging_enabled=self.logging_enabled)  # ADDED
-
-    # ---------- Logging ----------
     def log_phase(self):
+        """Log phase changes for debugging purposes."""
         if not self.logging_enabled:
             return
         try:
-            ap = self.game.active_player
-            nm = self.game.players[ap].name
+            active_player = self.game.active_player
+            player_name = self.game.players[active_player].name
+            current_phase = getattr(self.game, 'phase', '?')
+            
             # Only log if phase actually changed since last log
             if not hasattr(self, "_last_logged_phase"):
                 self._last_logged_phase = None
-            current = (nm, getattr(self.game, 'phase', '?'))
-            if self._last_logged_phase != current:
-                print(f"[PHASE] Active={nm} Phase={getattr(self.game,'phase','?')}")
-                self._last_logged_phase = current
+            current_state = (player_name, current_phase)
+            if self._last_logged_phase != current_state:
+                self._last_logged_phase = current_state
         except Exception:
+            # Silently ignore logging errors
             pass
 
-    # ---------- Game start ----------
     def enter_match(self):
+        """Start a new game match."""
         self.in_game = True
         self._begin_game_flow()
         self._init_turn_structure()
 
     def start_new_turn(self):
-        """
-        Begin a new turn for the active player.
-        This method is required by turn/phase logic and should be called by the turn manager or phase engine.
-        """
+        """Begin a new turn for the active player."""
         self._init_turn_structure()
-        if self.logging_enabled:
-            print(f"[TURN] New turn started for {self.game.players[self.game.active_player].name}")
 
     def _begin_game_flow(self):
         if self._game_flow_started: return
@@ -97,8 +101,6 @@ class GameController:
         if not self.opening_hands_drawn:
             self.draw_opening_hands()
         self.first_player_decided = True
-        if self.logging_enabled:
-            print("[START] Single-player game begun (no roll).")
 
     def _init_turn_structure(self):
         """Initialize/reset turn-structure state for a new game or turn using phase_hooks."""
@@ -114,30 +116,32 @@ class GameController:
             rolls = {pl.player_id: random.randint(1,20) for pl in self.game.players}
             hi = max(rolls.values())
             winners = [pid for pid,v in rolls.items() if v==hi]
-            if self.logging_enabled:
-                print("[ROLL] " + ", ".join(f"{self.game.players[p].name}:{rolls[p]}" for p in rolls))
             if len(winners)==1:
                 return winners[0], rolls
-            if self.logging_enabled:
-                print("[ROLL][TIE] Re-rolling...")
 
     def set_starter(self, starter_pid: int):
         self.game.active_player = starter_pid
         self.skip_first_draw_player = starter_pid
         self.skip_first_draw_used = False
         self.first_player_decided = True
-        # Opening hand draw after small delay (UI can call draw_opening_hands immediately or via QTimer)
-        self.draw_opening_hands()
+        # Opening hands will be drawn by the API after this method completes
 
     def draw_opening_hands(self):
         if self.opening_hands_drawn: return
-        for pl in self.game.players:
-            pl.hand = getattr(pl,'hand', [])
-            while len(pl.hand) < 7 and pl.library:
-                pl.hand.append(pl.library.pop(0))
+        
+        # Check if hands were already drawn during game.setup()
+        hands_already_drawn = all(len(pl.hand) == 7 for pl in self.game.players if len(pl.library) > 0)
+        
+        if hands_already_drawn:
+            pass
+        else:
+            for pl in self.game.players:
+                pl.hand = getattr(pl,'hand', [])
+                library_size_before = len(pl.library)
+                while len(pl.hand) < 7 and pl.library:
+                    pl.hand.append(pl.library.pop(0))
+                    
         self.opening_hands_drawn = True
-        if self.logging_enabled:
-            print("[START] Opening hands drawn.")
         self.log_phase()
 
     # ---------- Phase control ----------
@@ -156,12 +160,13 @@ class GameController:
 
     @property
     def active_player(self):
-        return self._active_player
+        return getattr(self.game, 'active_player', 0)
 
     @property
     def active_player_name(self):
-        if self.game.players and 0 <= self._active_player < len(self.game.players):
-            return self.game.players[self._active_player].name
+        active_id = getattr(self.game, 'active_player', 0)
+        if self.game.players and 0 <= active_id < len(self.game.players):
+            return self.game.players[active_id].name
         return "—"
 
     # ---------- Deck / Opponent helpers ----------
@@ -191,8 +196,6 @@ class GameController:
         try:
             new_state, ai_ids = build_game_fn(specs, ai_enabled=True)
         except Exception as ex:
-            if self.logging_enabled:
-                print(f"[AI-AUTO][ERR] {ex}")
             return False
         self.game = new_state
         self.ai_controllers = {pid: BasicAI(pid=pid) for pid in ai_ids}
@@ -202,8 +205,6 @@ class GameController:
         self.opening_hands_drawn = False
         self.skip_first_draw_player = None
         self.skip_first_draw_used = False
-        if self.logging_enabled:
-            print("[AI-AUTO] Added AI opponent automatically.")
         return True
 
     def reload_player0(self, new_game_fn, path: str):
@@ -333,48 +334,48 @@ class GameController:
     def pass_priority(self, player_id: int):
         return self.stack_engine.pass_priority(player_id)
 
-    # --- Merge TurnManager.tick logic here ---
-    def tick(self):
+    def sync_phase_state(self):
         """
-        Orchestrate state-based actions, events, layers, priority, and stack resolution.
+        Sync between controller phase system and game state phase system.
+        Called when phases change, not on a timer.
         """
-        # State-based actions (now from EventBus)
+        if not self.in_game or not self.first_player_decided:
+            return
+            
         try:
-            if hasattr(self.game, "events"):
-                self.game.events.run_state_based(self.game)
-        except Exception:
-            pass
-        # Event queue
-        try:
-            if hasattr(self.game, "events"):
-                self.game.events.process()
-        except Exception:
-            pass
-        # Continuous effects/layers
-        try:
-            if hasattr(self.game, "layers"):
-                self.game.layers.recompute()
-        except Exception:
-            pass
-        # Priority (AI auto-pass)
-        try:
-            if hasattr(self.game, "priority"):
-                self.game.priority.auto_pass_if_ai()
-        except Exception:
-            pass
-        # Stack auto-resolve
-        try:
-            if hasattr(self.game, "stack") and self.game.stack.can_resolve():
-                if hasattr(self.game.stack, "auto_resolve_if_trivial"):
-                    self.game.stack.auto_resolve_if_trivial()
-        except Exception:
-            pass
-            if hasattr(self.game.stack, "auto_resolve_if_trivial"):
-                    self.game.stack.auto_resolve_if_trivial()
-        except Exception:
-            pass
-            pass
-            if hasattr(self.game.stack, "auto_resolve_if_trivial"):
-                    self.game.stack.auto_resolve_if_trivial()
+            controller_phase = get_current_phase(self)
+            if controller_phase:
+                # Map controller phase names to game state phase names if needed
+                phase_mapping = {
+                    'precombat_main': 'MAIN1',
+                    'postcombat_main': 'MAIN2',
+                    'declare_attackers': 'COMBAT_DECLARE',
+                    'declare_blockers': 'COMBAT_BLOCK',
+                    'combat_damage': 'COMBAT_DAMAGE',
+                    'draw': 'DRAW',
+                    'untap': 'UNTAP',
+                    'upkeep': 'UPKEEP',
+                    'end': 'END',
+                    'cleanup': 'CLEANUP'
+                }
+                game_phase = phase_mapping.get(controller_phase.lower(), controller_phase.upper())
+                
+                # Find the corresponding phase index in the game state
+                from engine.game_state import PHASES
+                if game_phase in PHASES:
+                    new_index = PHASES.index(game_phase)
+                    if new_index != self.game.phase_index:
+                        old_phase = self.game.phase
+                        self.game.phase_index = new_index
+                        new_phase = self.game.phase
+                        # Trigger phase actions when phase changes
+                        if old_phase != new_phase:
+                            # Execute controller phase actions (this handles draw, untap, etc.)
+                            from engine.phase_hooks import _execute_phase_actions
+                            _execute_phase_actions(self, controller_phase)
+                            
+                            # Force UI refresh after phase actions
+                            if hasattr(self, '_api_ref') and self._api_ref:
+                                self._api_ref._force_immediate_ui_refresh()
         except Exception:
             pass
