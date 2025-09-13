@@ -35,7 +35,7 @@ class PlayerState:
     player_id: int
     name: str
     life: int = 40
-    # Note: Simple mana counter for backwards compatibility - proper mana pool in mana_pool attribute
+    mana: int = 0  # Simple mana counter for backwards compatibility - proper mana pool in mana_pool attribute
     library: List[Card] = field(default_factory=list)
     hand: List[Card] = field(default_factory=list)
     battlefield: List[Permanent] = field(default_factory=list)
@@ -198,6 +198,8 @@ class GameState:
         if total_cost > ps.mana:
             return ActionResult.ILLEGAL
         ps.mana -= total_cost
+        if card in ps.hand:
+            ps.hand.remove(card)
         ps.battlefield.append(Permanent(card=card))
         return ActionResult.OK
 
@@ -207,18 +209,56 @@ class GameState:
         # Commander from command zone
         if card.is_commander and card in ps.command:
             total_cost = card.mana_cost + ps.commander_tracker.tax_for(card.id)
-            res = self._pay_and_move_to_battlefield(ps, card, total_cost)
-            if res == ActionResult.OK:
-                ps.command.remove(card)
-                ps.commander_tracker.note_cast(card.id)
-            return res
+            # Try using mana pool first, then fall back to simple system
+            if hasattr(card, 'mana_cost_str') and card.mana_cost_str:
+                from .mana import parse_mana_cost
+                cost_dict = parse_mana_cost(card.mana_cost_str)
+                # Add commander tax as generic mana
+                tax = ps.commander_tracker.tax_for(card.id)
+                if tax > 0:
+                    cost_dict['C'] = cost_dict.get('C', 0) + tax
+                if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
+                    ps.command.remove(card)
+                    ps.battlefield.append(Permanent(card=card))
+                    ps.commander_tracker.note_cast(card.id)
+                    return ActionResult.OK
+                return ActionResult.ILLEGAL
+            else:
+                res = self._pay_and_move_to_battlefield(ps, card, total_cost)
+                if res == ActionResult.OK:
+                    ps.command.remove(card)
+                    ps.commander_tracker.note_cast(card.id)
+                return res
 
         if card not in ps.hand or "Land" in card.types:
             return ActionResult.ILLEGAL
 
         if "Creature" in card.types:
-            return (self._pay_and_move_to_battlefield(ps, card, card.mana_cost)
-                    if card.mana_cost <= ps.mana else ActionResult.ILLEGAL)
+            # Try using proper mana pool system first
+            if hasattr(card, 'mana_cost_str') and card.mana_cost_str:
+                from .mana import parse_mana_cost
+                cost_dict = parse_mana_cost(card.mana_cost_str)
+                if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
+                    ps.hand.remove(card)
+                    ps.battlefield.append(Permanent(card=card))
+                    return ActionResult.OK
+                return ActionResult.ILLEGAL
+            else:
+                # Fallback to simple system - try to tap lands for mana first
+                if card.mana_cost > ps.mana:
+                    # Try to tap enough lands to generate the required mana
+                    mana_needed = card.mana_cost - ps.mana
+                    untapped_lands = [perm for perm in ps.battlefield 
+                                    if "Land" in perm.card.types and not perm.tapped]
+                    
+                    if len(untapped_lands) >= mana_needed:
+                        # Tap lands to generate needed mana
+                        for i in range(mana_needed):
+                            if i < len(untapped_lands):
+                                self.tap_for_mana(pid, untapped_lands[i])
+                
+                return (self._pay_and_move_to_battlefield(ps, card, card.mana_cost)
+                        if card.mana_cost <= ps.mana else ActionResult.ILLEGAL)
 
         if "Sorcery" in card.types:
             if card.mana_cost > ps.mana:

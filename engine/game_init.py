@@ -9,6 +9,7 @@ try:
     from engine.card_fetch import set_sdk_online          # CHANGED: safe optional import
 except Exception:
     def set_sdk_online(_flag: bool):  # fallback no-op
+        print(f"⚠️  MTG SDK integration not available")
         return
 
 # Remove this import (causes ImportError):
@@ -31,11 +32,36 @@ def collect_ai_player_ids(deck_specs, ai_enabled: bool):
     return {pid for pid, (_, _, ai_flag) in enumerate(deck_specs) if ai_flag and ai_enabled}
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="MTG Commander (Qt)")
-    ap.add_argument('--deck', action='append', metavar='NAME=PATH[:AI]')
-    ap.add_argument('--no-ai', action='store_true')
-    ap.add_argument('--no-log', action='store_true')
-    ap.add_argument('--sdk-online', action='store_true')
+    ap = argparse.ArgumentParser(
+        description="MTG Commander (Qt) - Magic: The Gathering Commander format game with AI opponents",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+EXAMPLES:
+  %(prog)s                           # Start with default decks
+  %(prog)s --sdk-online              # Enable MTG SDK for accurate card data
+  %(prog)s --deck "Me=my_deck.txt"   # Use custom deck
+  %(prog)s --deck "P1=deck1.txt" --deck "P2=deck2.txt:AI"  # Multi-player
+
+MTG SDK INTEGRATION:
+  Use --sdk-online to enable official Magic: The Gathering API integration.
+  This provides:
+    • Accurate mana costs (e.g., {2}{U}{U} for Counterspell)
+    • Proper card text and abilities
+    • Correct power/toughness values
+    • Enhanced Commander format support
+  
+  Requires: pip install mtgsdk
+  See docs/MTG_SDK_Integration.md for details.
+"""
+    )
+    ap.add_argument('--deck', action='append', metavar='NAME=PATH[:AI]',
+                    help='Specify player deck: NAME=PATH or NAME=PATH:AI for AI player')
+    ap.add_argument('--no-ai', action='store_true',
+                    help='Disable AI opponents')
+    ap.add_argument('--no-log', action='store_true',
+                    help='Disable phase logging')
+    ap.add_argument('--sdk-online', action='store_true',
+                    help='Enable MTG SDK integration for enhanced card data (requires mtgsdk package)')
     return ap.parse_args()
 
 
@@ -176,7 +202,6 @@ def new_game(deck_specs=None, ai_enabled=True):
         try:
             cards, commander = _load_deck(path, pid)   # CHANGED
         except Exception as e:
-            # Deck load error (debug print removed)
             cards, commander = [], None
         ps = PlayerState(player_id=pid, name=name,
                          library=cards, commander=commander)  # REMOVED: life=STARTING_LIFE

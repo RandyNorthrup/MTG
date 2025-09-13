@@ -127,20 +127,26 @@ class GameController:
         # Opening hands will be drawn by the API after this method completes
 
     def draw_opening_hands(self):
+        """Draw opening hands according to official MTG rules.
+        
+        Official MTG Rules (CR 103.4):
+        - All players draw 7 cards for their opening hand
+        - Turn order advantage comes from the first draw step, not opening hands
+        """
         if self.opening_hands_drawn: return
         
-        # Check if hands were already drawn during game.setup()
-        hands_already_drawn = all(len(pl.hand) == 7 for pl in self.game.players if len(pl.library) > 0)
-        
-        if hands_already_drawn:
-            pass
-        else:
-            for pl in self.game.players:
-                pl.hand = getattr(pl,'hand', [])
-                library_size_before = len(pl.library)
-                while len(pl.hand) < 7 and pl.library:
-                    pl.hand.append(pl.library.pop(0))
-                    
+        for pl in self.game.players:
+            pl.hand = getattr(pl,'hand', [])
+            
+            # MTG Rules: ALL players draw exactly 7 cards for opening hand
+            opening_hand_size = 7
+            print(f"🃏 Drawing {opening_hand_size} cards for {pl.name} (opening hand)")
+            
+            # Clear existing hand and draw 7 cards
+            pl.hand.clear()
+            while len(pl.hand) < opening_hand_size and pl.library:
+                pl.hand.append(pl.library.pop(0))
+                
         self.opening_hands_drawn = True
         self.log_phase()
 
@@ -178,9 +184,11 @@ class GameController:
             return False
         p0 = self.game.players[0]
         p0_path = getattr(p0,'source_path', None)
+        
         decks_dir = os.path.join('data','decks')
         deck_files = sorted([os.path.join(decks_dir,f) for f in os.listdir(decks_dir)
                              if f.lower().endswith('.txt')])
+        
         ai_path = None
         for cand in deck_files:
             if p0_path and os.path.abspath(cand) == os.path.abspath(p0_path):
@@ -189,10 +197,17 @@ class GameController:
             break
         if not ai_path:
             ai_path = os.path.join(decks_dir,'missing_ai_deck.txt')
+        
+        # If p0_path is None or doesn't exist, use first available deck
+        if not p0_path or not os.path.exists(p0_path):
+            if deck_files:
+                p0_path = deck_files[0]  # Use first available deck
+                
         specs = [
             (p0.name, p0_path, False),
             ("AI", ai_path, True)
         ]
+        
         try:
             new_state, ai_ids = build_game_fn(specs, ai_enabled=True)
         except Exception as ex:
