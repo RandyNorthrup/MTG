@@ -265,9 +265,18 @@ class CardValidator:
         
         # Creatures and vehicles should have power/toughness
         if is_creature or is_vehicle:
-            if power is None:
+            # Detect cards with variable power/toughness expressed in rules text
+            text = (card_data.get("text", "") or "").lower()
+            variable_pt = (
+                ("power and toughness" in text and "equal" in text) or  # e.g., "power and toughness are each equal to ..."
+                ("power is equal" in text) or  # e.g., "X's power is equal to Y"
+                ("toughness is equal" in text) or  # e.g., "X's toughness is equal to Y"
+                ("*/*" in text)  # rare case if literal representation exists in text blob
+            )
+
+            if power is None and not variable_pt:
                 result.warnings.append("Creature cards should have power defined")
-            if toughness is None:
+            if toughness is None and not variable_pt:
                 result.warnings.append("Creature cards should have toughness defined")
                 
             # Validate power/toughness values
@@ -309,7 +318,15 @@ class CardValidator:
                 result.warnings.append(f"Invalid mana symbol in text: {symbol}")
     
     def _validate_color_identity(self, card_data: Dict[str, Any], result: ValidationResult):
-        """Validate color identity consistency"""
+        """Validate color identity consistency.
+        
+        Notes:
+        - We trust database-provided color_identity as authoritative.
+        - We only warn when we can positively infer colors from mana cost or rules text,
+          and those inferred colors are missing from color_identity.
+        - We do NOT warn for "extra" colors from the DB, since identity can stem from
+          characteristics not always present in cost/text (e.g., color indicators, color-producing abilities, inherent color, etc.).
+        """
         color_identity = set(card_data.get("color_identity", []))
         mana_cost_str = card_data.get("mana_cost_str", "")
         text = card_data.get("text", "")
@@ -320,12 +337,12 @@ class CardValidator:
         for symbol in cost_symbols:
             if symbol in "WUBRG":
                 cost_colors.add(symbol)
-            elif "/" in symbol:  # Hybrid
+            elif "/" in symbol:  # Hybrid (e.g., {G/W}, {W/U}, {2/G}, etc.)
                 for color in symbol.split("/"):
                     if color in "WUBRG":
                         cost_colors.add(color)
         
-        # Extract colors from text
+        # Extract colors from text (activated/triggered/static abilities containing mana symbols)
         text_colors = set()
         text_symbols = self.mana_symbol_patterns["mana_symbol"].findall(text)
         for symbol in text_symbols:
@@ -336,18 +353,17 @@ class CardValidator:
                     if color in "WUBRG":
                         text_colors.add(color)
         
-        # Combine all colors that should be in identity
-        expected_colors = cost_colors | text_colors
+        # Colors we can confidently infer directly from cost/text symbols
+        inferred_colors = cost_colors | text_colors
         
-        # Check consistency
-        if expected_colors != color_identity:
-            missing = expected_colors - color_identity
-            extra = color_identity - expected_colors
-            
-            if missing:
-                result.warnings.append(f"Color identity missing colors: {', '.join(missing)}")
-            if extra:
-                result.warnings.append(f"Color identity has extra colors: {', '.join(extra)}")
+        # If we can't infer any colors from symbols, don't second-guess the DB
+        if not inferred_colors:
+            return
+        
+        # Warn only when the DB is missing colors we can infer from symbols
+        missing = inferred_colors - color_identity
+        if missing:
+            result.warnings.append(f"Color identity missing colors: {', '.join(sorted(missing))}")
     
     def _normalize_card_data(self, card_data: Dict[str, Any], result: ValidationResult) -> Dict[str, Any]:
         """Create normalized version of card data"""
