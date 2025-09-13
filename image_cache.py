@@ -46,9 +46,9 @@ def _is_valid_image(path: str) -> bool:
         if os.path.getsize(path) < 512:
             return False
         try:
-            from PySide6.QtWidgets import QApplication  # type: ignore
+            from PySide6.QtWidgets import QApplication
             if QApplication.instance() is not None:
-                from PySide6.QtGui import QPixmap  # type: ignore
+                from PySide6.QtGui import QPixmap
                 pm = QPixmap(path)
                 if pm.isNull():
                     return False
@@ -159,7 +159,7 @@ def init_image_cache(qt_parent=None, interval_sec: int = CLEAN_INTERVAL):
     if _qt_timer:
         return _qt_timer
     try:
-        from PySide6.QtCore import QTimer  # type: ignore
+        from PySide6.QtCore import QTimer
     except Exception:
         return None
     _qt_timer = QTimer(qt_parent)

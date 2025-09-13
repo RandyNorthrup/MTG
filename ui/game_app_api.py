@@ -90,19 +90,18 @@ class GameAppAPI:
             
             # Spell checks
             mana_cost = getattr(card, 'mana_cost', 0)
-            current_mana = getattr(player, 'mana', 0)
             
-            # Check mana availability
+            # Check mana availability using mana pool
             if hasattr(player, 'mana_pool'):
-                # Use mana pool if available
                 from engine.mana import parse_mana_cost
                 cost_dict = parse_mana_cost(getattr(card, 'mana_cost_str', str(mana_cost)))
                 if not player.mana_pool.can_pay(cost_dict):
                     return False, "Insufficient mana"
             else:
-                # Simple mana check
-                if mana_cost > current_mana:
-                    return False, f"Need {mana_cost} mana, have {current_mana}"
+                # No mana pool - check total mana
+                total_mana = getattr(player, 'total_mana', 0)
+                if mana_cost > total_mana:
+                    return False, f"Need {mana_cost} mana, have {total_mana}"
             
             # Phase/timing checks
             current_phase = getattr(self.controller, 'current_phase', 'main1')

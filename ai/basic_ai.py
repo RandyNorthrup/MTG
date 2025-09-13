@@ -64,7 +64,7 @@ class BasicAI:
         # 4. Cast strongest affordable creature
         affordable_creatures = [
             card for card in player.hand 
-            if "Creature" in card.types and card.mana_cost <= player.mana
+            if "Creature" in card.types and card.mana_cost <= player.total_mana
         ]
         if affordable_creatures:
             # Sort by power + toughness (descending)
@@ -77,7 +77,7 @@ class BasicAI:
         # 5. Cast a random affordable sorcery
         affordable_sorceries = [
             card for card in player.hand 
-            if "Sorcery" in card.types and card.mana_cost <= player.mana
+            if "Sorcery" in card.types and card.mana_cost <= player.total_mana
         ]
         if affordable_sorceries:
             chosen_sorcery = random.choice(affordable_sorceries)

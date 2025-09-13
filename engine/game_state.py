@@ -35,7 +35,7 @@ class PlayerState:
     player_id: int
     name: str
     life: int = 40
-    mana: int = 0  # Simple mana counter for backwards compatibility - proper mana pool in mana_pool attribute
+    # Simple mana counter removed - use mana_pool.total_mana property instead
     library: List[Card] = field(default_factory=list)
     hand: List[Card] = field(default_factory=list)
     battlefield: List[Permanent] = field(default_factory=list)
@@ -59,15 +59,12 @@ class PlayerState:
                 self.hand.append(self.library.pop())
 
     def add_mana(self, amount: int):
-        """Backwards compatibility - adds generic mana to pool."""
+        """Add generic mana to pool."""
         self.mana_pool.add('C', amount)  # Add to generic colorless mana
-        # Keep simple counter for backwards compatibility
-        self.mana += amount
 
     def reset_mana(self):
-        """Reset both simple mana counter and mana pool."""
+        """Reset mana pool."""
         self.mana_pool.clear()
-        self.mana = 0
     
     @property
     def total_mana(self) -> int:
@@ -83,7 +80,8 @@ class PlayerState:
                 cost = c.mana_cost
                 if c.is_commander:
                     cost += self.commander_tracker.tax_for(c.id)
-                if cost <= self.mana:
+                # Use mana pool total instead of simple mana counter
+                if cost <= self.total_mana:
                     playable.append(c)
         return playable
 
@@ -192,12 +190,22 @@ class GameState:
     def tap_for_mana(self, pid: int, perm: Permanent):
         if "Land" in perm.card.types and not perm.tapped:
             perm.tapped = True
-            self.players[pid].add_mana(1)
+            # Determine mana type based on land type
+            if perm.card.name == "Forest":
+                self.players[pid].mana_pool.add('G', 1, source=perm)
+            else:
+                # Default to generic/colorless mana
+                self.players[pid].mana_pool.add('C', 1, source=perm)
+            # Mana is now tracked solely in the mana pool
 
     def _pay_and_move_to_battlefield(self, ps: PlayerState, card: Card, total_cost: int) -> ActionResult:
-        if total_cost > ps.mana:
+        if total_cost > ps.total_mana:
             return ActionResult.ILLEGAL
-        ps.mana -= total_cost
+        # Use mana pool to pay generic cost
+        cost_dict = {'C': total_cost}
+        if not ps.mana_pool.can_pay(cost_dict):
+            return ActionResult.ILLEGAL
+        ps.mana_pool.pay(cost_dict)
         if card in ps.hand:
             ps.hand.remove(card)
         ps.battlefield.append(Permanent(card=card))
@@ -244,26 +252,20 @@ class GameState:
                     return ActionResult.OK
                 return ActionResult.ILLEGAL
             else:
-                # Fallback to simple system - try to tap lands for mana first
-                if card.mana_cost > ps.mana:
-                    # Try to tap enough lands to generate the required mana
-                    mana_needed = card.mana_cost - ps.mana
-                    untapped_lands = [perm for perm in ps.battlefield 
-                                    if "Land" in perm.card.types and not perm.tapped]
-                    
-                    if len(untapped_lands) >= mana_needed:
-                        # Tap lands to generate needed mana
-                        for i in range(mana_needed):
-                            if i < len(untapped_lands):
-                                self.tap_for_mana(pid, untapped_lands[i])
-                
-                return (self._pay_and_move_to_battlefield(ps, card, card.mana_cost)
-                        if card.mana_cost <= ps.mana else ActionResult.ILLEGAL)
+                # Fallback to generic mana cost using pool system
+                cost_dict = {'C': card.mana_cost}  # Treat as generic mana cost
+                if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
+                    ps.hand.remove(card)
+                    ps.battlefield.append(Permanent(card=card))
+                    return ActionResult.OK
+                return ActionResult.ILLEGAL
 
         if "Sorcery" in card.types:
-            if card.mana_cost > ps.mana:
+            # Use mana pool to pay for sorcery
+            cost_dict = {'C': card.mana_cost}  # Treat as generic mana cost
+            if not ps.mana_pool.can_pay(cost_dict):
                 return ActionResult.ILLEGAL
-            ps.mana -= card.mana_cost
+            ps.mana_pool.pay(cost_dict)
             ps.hand.remove(card)
 
             def effect(game: GameState, item: StackItem):

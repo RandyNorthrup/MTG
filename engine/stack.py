@@ -2,18 +2,18 @@ from dataclasses import dataclass, field
 from typing import Callable, Any, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .game_state import GameState  # forward ref
+    from .game_state import GameState
 
 @dataclass
 class StackItem:
     # Unified / compatible fields
     source: Any = None
-    source_card: Any = None          # legacy name used in game_state.cast_spell
+    source_card: Any = None          # legacy compatibility
     controller: Optional[int] = None
-    controller_id: Optional[int] = None  # legacy
+    controller_id: Optional[int] = None  # legacy compatibility
     label: str = ""
     resolve_fn: Optional[Callable[['GameState', 'StackItem'], None]] = None
-    effect: Optional[Callable[['GameState', 'StackItem'], None]] = None  # legacy
+    effect: Optional[Callable[['GameState', 'StackItem'], None]] = None  # legacy compatibility
     targets: list[Any] = field(default_factory=list)
 
     def describe(self) -> str:

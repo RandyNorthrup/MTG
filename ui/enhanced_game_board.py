@@ -480,6 +480,7 @@ class BattlefieldZone(QWidget):
         self.is_opponent = is_opponent
         self.cards = []
         self.selected_cards = set()
+        self.card_widgets = {}  # Cache widgets by card ID to prevent recreation
         self.setMinimumHeight(50)  # Much smaller minimum height
         
         # Enable drag and drop
@@ -523,24 +524,24 @@ class BattlefieldZone(QWidget):
             self.refresh_display()
             
     def refresh_display(self):
-        """Refresh the battlefield display."""
-        # Clear existing widgets safely
-        for i in reversed(range(self.cards_layout.count())):
-            item = self.cards_layout.itemAt(i)
-            if item and item.widget():
-                widget = item.widget()
-                # Skip signal disconnection to avoid RuntimeWarnings
-                # Widgets will be deleted anyway, so connections will be cleaned up automatically
-                
-                # Remove from layout immediately
+        """Refresh the battlefield display with widget reuse."""
+        print(f"📝 REFRESH: Refreshing battlefield display with {len(self.cards)} cards")
+        
+        # Get current card IDs
+        current_card_ids = {getattr(card, 'id', id(card)) for card in self.cards}
+        
+        # Remove widgets for cards that are no longer present
+        widgets_to_remove = []
+        for card_id, widget in list(self.card_widgets.items()):
+            if card_id not in current_card_ids:
+                print(f"🗑️ REFRESH: Removing widget for card ID {card_id}")
                 self.cards_layout.removeWidget(widget)
-                # Mark for deletion
                 widget.deleteLater()
-                
-        if not self.cards:
-            return
-            
-        # Add cards to grid - dynamic layout based on available space
+                widgets_to_remove.append(card_id)
+        
+        for card_id in widgets_to_remove:
+            del self.card_widgets[card_id]
+        
         if not self.cards:
             return
             
@@ -550,11 +551,29 @@ class BattlefieldZone(QWidget):
         card_width = 90 + 4  # Card width + spacing
         cols = max(1, container_width // card_width)
         
+        # Clear layout but don't delete widgets
+        for i in reversed(range(self.cards_layout.count())):
+            item = self.cards_layout.itemAt(i)
+            if item and item.widget():
+                self.cards_layout.removeItem(item)
+        
         for i, card in enumerate(self.cards):
             row = i // cols
             col = i % cols
             
-            card_widget = self.create_card_widget(card)
+            card_id = getattr(card, 'id', id(card))
+            
+            # Reuse existing widget or create new one
+            if card_id in self.card_widgets:
+                card_widget = self.card_widgets[card_id]
+                print(f"♾️ REFRESH: Reusing existing widget for '{getattr(card, 'name', 'Unknown')}' (tapped: {card_widget.is_tapped})")
+                # Sync permanent state with existing widget
+                self._sync_widget_with_permanent(card_widget, card)
+            else:
+                print(f"🎨 REFRESH: Creating new widget for '{getattr(card, 'name', 'Unknown')}'")
+                card_widget = self.create_card_widget(card)
+                self.card_widgets[card_id] = card_widget
+            
             self.cards_layout.addWidget(card_widget, row, col)
             
     def create_card_widget(self, card):
@@ -567,25 +586,51 @@ class BattlefieldZone(QWidget):
         # Battlefield cards cannot be dragged back to hand
         widget = create_card_widget(card, QSize(90, 120), api=api, location="battlefield")
         
-        # Sync permanent state with widget if permanents are available
-        if hasattr(self, 'permanents') and self.permanents:
-            for perm in self.permanents:
-                # Find matching permanent for this card
-                perm_card = perm.card if hasattr(perm, 'card') else perm
-                if perm_card == card:
-                    # Sync tapped state
-                    if hasattr(perm, 'tapped') and perm.tapped:
-                        widget.is_tapped = True
-                        widget.rotation_angle = widget.tap_angle  # Set to 90 degrees
-                        widget.update()  # Trigger visual update
-                        print(f"🔄 Synced tapped state for {getattr(card, 'name', 'Unknown')}: tapped={perm.tapped}")
-                    break
+        # Sync initial permanent state
+        self._sync_widget_with_permanent(widget, card)
         
         # Connect signals to board handlers
         widget.card_clicked.connect(self.card_clicked.emit)
         widget.card_right_clicked.connect(lambda c, pos: self.card_right_clicked.emit(c))
         
         return widget
+    
+    def _sync_widget_with_permanent(self, widget, card):
+        """Sync widget state with corresponding permanent."""
+        if not hasattr(self, 'permanents') or not self.permanents:
+            return
+            
+        print(f"🔍 SYNC: Checking permanent state sync for card '{getattr(card, 'name', 'Unknown')}', {len(self.permanents)} permanents available")
+        for perm in self.permanents:
+            # Find matching permanent for this card
+            perm_card = perm.card if hasattr(perm, 'card') else perm
+            if perm_card == card:
+                print(f"🎯 SYNC: Found matching permanent for '{getattr(card, 'name', 'Unknown')}'")
+                # Sync tapped state only if different from widget state
+                perm_tapped = hasattr(perm, 'tapped') and perm.tapped
+                if perm_tapped != widget.is_tapped:  # Only sync if states differ
+                    print(f"🔄 SYNC: Syncing tapped state mismatch for '{getattr(card, 'name', 'Unknown')}' - perm_tapped={perm_tapped}, widget_tapped={widget.is_tapped}")
+                    
+                    if perm_tapped:
+                        # Permanent is tapped, widget is not - sync to tapped
+                        print(f"📌 SYNC: Setting widget to tapped (rotation: {widget.tap_angle}°)")
+                        widget.is_tapped = True
+                        widget.rotation_angle = widget.tap_angle  # Set to 90 degrees directly (no animation)
+                        widget.update()  # Trigger visual update
+                        print(f"📌 SYNC: Widget state after sync - is_tapped: {widget.is_tapped}, rotation_angle: {widget.rotation_angle:.1f}°")
+                    else:
+                        # Permanent is untapped, widget is tapped - sync to untapped
+                        print(f"📌 SYNC: Setting widget to untapped (rotation: 0.0°)")
+                        widget.is_tapped = False
+                        widget.rotation_angle = 0.0
+                        widget.update()
+                    
+                    print(f"✅ SYNC: Synced tapped state for {getattr(card, 'name', 'Unknown')}: {widget.is_tapped}")
+                else:
+                    print(f"✅ SYNC: States already match for '{getattr(card, 'name', 'Unknown')}' - perm_tapped={perm_tapped}, widget_tapped={widget.is_tapped}")
+                break
+        else:
+            print(f"⚠️  SYNC: No matching permanent found for card '{getattr(card, 'name', 'Unknown')}'")
     
     def dragEnterEvent(self, event):
         """Handle drag enter event."""
@@ -1626,8 +1671,15 @@ class EnhancedGameBoard(QMainWindow):
             if self.game.players:
                 player = self.game.players[0]
                 if hasattr(player, 'mana_pool'):
+                    # Read from the pool dictionary, not attributes
                     for color in ['W', 'U', 'B', 'R', 'G', 'C']:
-                        mana_dict[color] = getattr(player.mana_pool, color.lower(), 0)
+                        mana_dict[color] = player.mana_pool.pool.get(color, 0)
+                    print(f"💰 MANA: Updated mana pool: {mana_dict} (total: {sum(mana_dict.values())})")
+                    
+                    # Debug the actual mana_pool object
+                    print(f"🔍 MANA: Player mana_pool object: {player.mana_pool}")
+                else:
+                    print(f"⚠️  MANA: Player has no mana_pool attribute")
                         
             self.phase_indicator.set_phase(current_phase, current_step, active_player_name, turn_number, mana_dict)
             

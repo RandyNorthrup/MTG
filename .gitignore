@@ -275,3 +275,25 @@ image_processing_temp/
 api_cache/
 network_cache/
 scryfall_cache/
+
+# Additional cleanup patterns
+# -----------------------------------------------------------------------------
+# Duplicate files and backups
+*_copy.*
+*_backup.*
+*.old
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/

@@ -201,6 +201,10 @@ class InteractiveCardWidget(QFrame):
         self.is_blocking = False
         self.is_dragging = False
         
+        # Debug widget creation
+        # card_name = getattr(card, 'name', 'Unknown')
+        # print(f"🎨 WIDGET: Creating new widget for '{card_name}', initial tapped state: {self.is_tapped}")
+        
         # Settings
         self.hover_scale = 1.1
         self.drag_threshold = 8
@@ -279,6 +283,9 @@ class InteractiveCardWidget(QFrame):
         self.rotation_animation = QPropertyAnimation(self, b"rotation_angle")
         self.rotation_animation.setDuration(300)
         self.rotation_animation.setEasingCurve(QEasingCurve.OutCubic)
+        
+        # Add debug callback for animation completion
+        self.rotation_animation.finished.connect(self._on_rotation_animation_finished)
     
     def _setup_context_menu(self):
         """Setup context menu."""
@@ -335,35 +342,26 @@ class InteractiveCardWidget(QFrame):
         
     @rotation_angle.setter
     def rotation_angle(self, value):
+        old_value = getattr(self, '_rotation_angle', 0.0)
         self._rotation_angle = value
+        # Debug rotation changes (uncomment for debugging)
+        # print(f"🔄 ROTATION: Card '{getattr(self.card, 'name', 'Unknown')}' rotation changed from {old_value:.1f}° to {value:.1f}°")
         self.update()
     
     def paintEvent(self, event):
-        """Custom paint with transformations."""
+        """Simple paint event - just add tapped indicator for now."""
         # Check if widget is still valid before processing
         try:
             self.rect()  # Quick validity check
         except RuntimeError:
             return
             
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        # Debug rotation if significant rotation is applied
+        if abs(self.rotation_angle) > 5.0:  # Only log if rotation is more than 5 degrees
+            card_name = getattr(self.card, 'name', 'Unknown')
+            print(f"🎨 PAINT: Card '{card_name}' should be rotated {self.rotation_angle:.1f}° (tapped: {self.is_tapped})")
         
-        # Apply transformations
-        center = QRectF(self.rect()).center()
-        transform = QTransform()
-        transform.translate(center.x(), center.y())
-        transform.scale(self.current_scale, self.current_scale)
-        transform.rotate(self.rotation_angle)
-        transform.translate(-center.x(), -center.y())
-        painter.setTransform(transform)
-        
-        # Draw state indicators
-        self._draw_state_indicators(painter)
-        
-        # Reset transform for child widgets
-        painter.setTransform(QTransform())
-        
+        # Use default widget rendering
         try:
             super().paintEvent(event)
         except RuntimeError as e:
@@ -371,6 +369,15 @@ class InteractiveCardWidget(QFrame):
                 return
             else:
                 raise
+        
+        # Add simple tapped indicator overlay
+        if self.is_tapped:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setBrush(QBrush(QColor(255, 0, 0, 120)))
+            painter.setPen(QPen(QColor(255, 0, 0), 2))
+            rect = QRectF(self.rect())
+            painter.drawText(rect.center().x() - 25, rect.center().y(), "TAPPED")
     
     def _draw_state_indicators(self, painter):
         """Draw visual state indicators."""
@@ -642,38 +649,63 @@ class InteractiveCardWidget(QFrame):
         self.scale_animation.setEndValue(target_scale)
         self.scale_animation.start()
     
+    def _on_rotation_animation_finished(self):
+        """Debug callback for rotation animation completion."""
+        card_name = getattr(self.card, 'name', 'Unknown')
+        print(f"✅ ANIMATION: Rotation animation completed for '{card_name}', final angle: {self.rotation_angle:.1f}°, tapped state: {self.is_tapped}")
+    
     # Public methods
     def tap_card(self, animated=True):
         """Tap the card."""
+        card_name = getattr(self.card, 'name', 'Unknown')
+        print(f"🔥 TAP: Attempting to tap '{card_name}', already tapped: {self.is_tapped}")
+        
         if self.is_tapped:
+            print(f"⚠️  TAP: '{card_name}' is already tapped, skipping")
             return
             
         self.is_tapped = True
         self.card_tapped.emit(self.card)
         
         if animated:
+            print(f"🎬 TAP: Starting animated tap for '{card_name}' from {self.rotation_angle:.1f}° to {self.tap_angle:.1f}°")
+            # Stop any existing animation
+            if self.rotation_animation.state() != self.rotation_animation.State.Stopped:
+                print(f"🚫 TAP: Stopping existing rotation animation for '{card_name}'")
             self.rotation_animation.stop()
             self.rotation_animation.setStartValue(self.rotation_angle)
             self.rotation_animation.setEndValue(self.tap_angle)
+            print(f"🎥 TAP: Starting rotation animation: {self.rotation_animation.startValue()} -> {self.rotation_animation.endValue()}")
             self.rotation_animation.start()
         else:
+            print(f"⚡ TAP: Immediately setting '{card_name}' rotation to {self.tap_angle:.1f}° (no animation)")
             self.rotation_angle = self.tap_angle
             self.update()
             
     def untap_card(self, animated=True):
         """Untap the card."""
+        card_name = getattr(self.card, 'name', 'Unknown')
+        print(f"🔄 UNTAP: Attempting to untap '{card_name}', currently tapped: {self.is_tapped}")
+        
         if not self.is_tapped:
+            print(f"⚠️  UNTAP: '{card_name}' is already untapped, skipping")
             return
             
         self.is_tapped = False
         self.card_untapped.emit(self.card)
         
         if animated:
+            print(f"🎬 UNTAP: Starting animated untap for '{card_name}' from {self.rotation_angle:.1f}° to 0.0°")
+            # Stop any existing animation
+            if self.rotation_animation.state() != self.rotation_animation.State.Stopped:
+                print(f"🚫 UNTAP: Stopping existing rotation animation for '{card_name}'")
             self.rotation_animation.stop()
             self.rotation_animation.setStartValue(self.rotation_angle)
             self.rotation_animation.setEndValue(0.0)
+            print(f"🎥 UNTAP: Starting rotation animation: {self.rotation_animation.startValue()} -> {self.rotation_animation.endValue()}")
             self.rotation_animation.start()
         else:
+            print(f"⚡ UNTAP: Immediately setting '{card_name}' rotation to 0.0° (no animation)")
             self.rotation_angle = 0.0
             self.update()
     
