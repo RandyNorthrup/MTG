@@ -83,7 +83,12 @@ dmypy.json
 # Documentation
 # -----------------------------------------------------------------------------
 docs/_build/
+docs/.doctrees/
 .readthedocs.yml
+# Keep docs/ directory but ignore build artifacts
+!docs/*.md
+!docs/*.rst
+!docs/*.txt
 
 # Build & Distribution
 # -----------------------------------------------------------------------------
@@ -110,7 +115,7 @@ QtCreator.ini
 
 # Game Data & Cache
 # -----------------------------------------------------------------------------
-# Large card databases
+# Large card databases (keep structure, ignore large files)
 data/cards/cards.db
 data/cards/card_db_full.json
 data/cards/card_db.json.bak
@@ -120,6 +125,7 @@ data/cards/card_db_full.json.bak
 data/decks/*.autosave
 data/decks/*.tmp
 data/decks/*.bak
+data/decks/*~
 
 # Image caches and runtime data
 data/images/cache/
@@ -134,6 +140,13 @@ __pycache__/
 # Runtime generated files
 data/game_ids.txt
 data/cache/
+data/temp/
+data/runtime/
+
+# User preferences and settings
+data/preferences.json
+data/settings.json
+user_config.json
 
 # Application cache directories
 tools/__pycache__/
@@ -235,3 +248,30 @@ profile_*.txt
 performance_*.json
 *.prof
 *.pstats
+
+# MTG Game Specific
+# -----------------------------------------------------------------------------
+# Game session data
+game_session_*.json
+player_stats.json
+match_history.json
+
+# UI state and window positions
+window_state.json
+ui_preferences.json
+
+# AI training data and models
+ai_training_data/
+ai_models/
+*.model
+*.weights
+
+# Card image downloads and processing
+card_images_temp/
+image_processing_temp/
+*.downloading
+
+# Network and API cache
+api_cache/
+network_cache/
+scryfall_cache/

@@ -1,6 +1,6 @@
 import os
 import random
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QMessageBox, QDialog
 from engine.game_controller import GameController
 from engine.game_state import GameState
@@ -24,6 +24,7 @@ class GameAppAPI:
         self._beginning_step_queue = []
         self._opening_sequence_done = False
         self.pending_match_active = False  # <-- Ensure this attribute always exists
+        self.mulligan_in_progress = False  # Block card playing during mulligan
         self._debug_win = None
         self.board_window = None
 
@@ -237,6 +238,14 @@ class GameAppAPI:
             if hasattr(player, 'mana_pool'):
                 player.mana_pool.add(mana_color, 1)
                 print(f"Tapped {card.name} for {mana_color} mana")
+                
+                # Force UI refresh to show card rotation and mana pool updates
+                try:
+                    self._force_immediate_ui_refresh()
+                    print(f"✅ UI refreshed after tapping for mana")
+                except Exception as ui_error:
+                    print(f"❌ UI refresh failed after tapping: {ui_error}")
+                
                 return True
                 
             return False
@@ -329,6 +338,10 @@ class GameAppAPI:
         """
         
         try:
+            # Block card dropping during mulligan process
+            if getattr(self, 'mulligan_in_progress', False):
+                print(f"⚠️  Cannot drag cards during mulligan - complete mulligan decision first")
+                return False
             # Get current player
             player = self.get_current_player()
             if not player or not hasattr(player, 'hand'):
@@ -452,8 +465,15 @@ class GameAppAPI:
             
         # Ensure game and players exist before accessing them
         if not self.game or not hasattr(self.game, 'players') or not self.game.players:
-            # Initialize with default player if none exist
-            specs = [("You", None, False)]  # Default player with no deck path initially
+            # Initialize with default player using a valid deck path
+            decks_dir = os.path.join('data', 'decks')
+            try:
+                deck_files = [os.path.join(decks_dir, f)
+                              for f in os.listdir(decks_dir) if f.lower().endswith('.txt')]
+                default_deck = deck_files[0] if deck_files else None
+            except Exception:
+                default_deck = None
+            specs = [("You", default_deck, False)]  # Use valid deck path
         else:
             player_deck = getattr(self.game.players[0], 'source_path', None)
             player_name = getattr(self.game.players[0], 'name', 'You')
@@ -507,10 +527,27 @@ class GameAppAPI:
         
         # Ensure game and players exist before accessing them
         if not self.game or not hasattr(self.game, 'players') or not self.game.players:
-            specs = [("You", None, False)]  # Default player
+            # Get a valid deck path instead of None
+            decks_dir = os.path.join('data', 'decks')
+            try:
+                deck_files = [os.path.join(decks_dir, f)
+                              for f in os.listdir(decks_dir) if f.lower().endswith('.txt')]
+                default_deck = deck_files[0] if deck_files else None
+            except Exception:
+                default_deck = None
+            specs = [("You", default_deck, False)]  # Use valid deck path
         else:
             player_name = getattr(self.game.players[0], 'name', 'You')
             player_deck = getattr(self.game.players[0], 'source_path', None)
+            # If player_deck is None, try to get a fallback
+            if not player_deck:
+                decks_dir = os.path.join('data', 'decks')
+                try:
+                    deck_files = [os.path.join(decks_dir, f)
+                                  for f in os.listdir(decks_dir) if f.lower().endswith('.txt')]
+                    player_deck = deck_files[0] if deck_files else None
+                except Exception:
+                    pass
             specs = [(player_name, player_deck, False)]
             
         self._rebuild_game_with_specs(specs)
@@ -520,6 +557,11 @@ class GameAppAPI:
     def start_pending_match(self):
         if not self.pending_match_active:
             return
+        # Ensure mulligan/hand sequence will run for this new start
+        self._opening_sequence_done = False
+        self.mulligan_in_progress = False  # Reset mulligan blocking
+        setattr(self.game, '_opening_hands_deferred', True)
+        self.controller.opening_hands_drawn = False  # Allow hands to be drawn again
         self.pending_match_active = False
         
         # Ensure game and players exist before accessing them
@@ -539,7 +581,16 @@ class GameAppAPI:
     def enter_match_now(self):
         if self.pending_match_active:
             return
+        # Reset opening sequence flags for new match
+        print(f"🎮 DEBUG: enter_match_now - resetting flags")
+        self._opening_sequence_done = False
+        self.mulligan_in_progress = False  # Reset mulligan blocking
+        setattr(self.game, '_opening_hands_deferred', True)
+        self.controller.first_player_decided = False
+        self.controller.opening_hands_drawn = False  # Allow hands to be drawn again
+        print(f"🎮 DEBUG: enter_match_now - ensuring AI opponent")
         self.ensure_ai_opponent()
+        print(f"🎮 DEBUG: enter_match_now - game now has {len(self.game.players)} players")
         if len(self.game.players) > 1:
             # Ensure board window opens first, then prompt for roll immediately
             self._ensure_game_window()
@@ -555,13 +606,9 @@ class GameAppAPI:
         if not self.controller.in_game:
             self.controller.enter_match()
         self.controller.set_starter(starter_index)
-        # NOW draw opening hands after roll is decided (correct MTG timing)
-        self.controller.draw_opening_hands()
+        # Opening hands will be drawn at the start of the mulligan process
         self._handle_opening_hands_and_mulligans()
-        self.controller.log_phase()
-        self._phase_ui()
-        # Trigger automatic beginning phase sequence for game start
-        self._trigger_beginning_phase_sequence()
+        # Note: _handle_opening_hands_and_mulligans will advance to main phase when complete
         # Force board window focus after game starts
         if self.board_window:
             self.board_window.show()
@@ -586,13 +633,9 @@ class GameAppAPI:
         if not self.controller.in_game:
             self.controller.enter_match()
         self.controller.set_starter(0)
-        # Draw opening hands after starter is set
-        self.controller.draw_opening_hands()
+        # Opening hands will be drawn at the start of the mulligan process
         self._handle_opening_hands_and_mulligans()
-        self.controller.log_phase()
-        self._phase_ui()
-        # Trigger automatic beginning phase sequence for game start
-        self._trigger_beginning_phase_sequence()
+        # Note: _handle_opening_hands_and_mulligans will advance to main phase when complete
         # Force board window focus after game starts  
         if self.board_window:
             self.board_window.show()
@@ -868,11 +911,25 @@ class GameAppAPI:
 
     # Internal helpers
     def _rebuild_game_with_specs(self, specs):
-        game, ai_ids = self._new_game_factory(specs, ai_enabled=True)
+        try:
+            game, ai_ids = self._new_game_factory(specs, ai_enabled=True)
+        except Exception as e:
+            raise
+            
         logging_flag = self.controller.logging_enabled
         self.controller = GameController(game, ai_ids, logging_enabled=logging_flag)
         self.game = self.controller.game
         self.w.logging_enabled = self.controller.logging_enabled
+        
+        # Reset opening sequence flags so mulligan dialogs will show for this new game
+        self._opening_sequence_done = False
+        self.mulligan_in_progress = False  # Reset mulligan blocking
+        setattr(self.game, '_opening_hands_deferred', True)
+        # Also ensure controller is in a clean pre-game state
+        self.controller.in_game = False
+        self.controller.first_player_decided = False
+        self.controller.opening_hands_drawn = False  # Allow hands to be drawn again
+        
         # Main window no longer has a play area - only board window is used
         if hasattr(self.w, 'decks_manager'):
             self.w.decks_manager.refresh()
@@ -881,10 +938,38 @@ class GameAppAPI:
             self.ensure_ai_opponent()
 
     def _handle_opening_hands_and_mulligans(self):
+        print(f"🎯 DEBUG: _handle_opening_hands_and_mulligans called - _opening_sequence_done: {self._opening_sequence_done}")
         if self._opening_sequence_done:
+            print(f"🚫 DEBUG: Skipping mulligan - sequence already done")
             return
         
-        # Initialize mulligan counters (hands should already be drawn by controller)
+        # Draw opening hands first (7 for all players)
+        print(f"🎯 DEBUG: Drawing opening hands...")
+        self.controller.draw_opening_hands()
+        
+        # Debug: Show actual hand and library contents
+        for i, player in enumerate(self.game.players):
+            hand_size = len(player.hand) if hasattr(player, 'hand') else 0
+            library_size = len(player.library) if hasattr(player, 'library') else 0
+            print(f"🎯 DEBUG: {player.name} has {hand_size} cards in hand, {library_size} cards in library")
+        
+        # Force immediate UI refresh to show cards in hand zone
+        try:
+            self._force_immediate_ui_refresh()
+            # Process events to ensure UI updates
+            from PySide6.QtWidgets import QApplication
+            QApplication.processEvents()
+            print(f"✅ Opening hands displayed on board")
+        except Exception as e:
+            print(f"⚠️  UI refresh failed: {e}")
+        
+        print(f"🎯 DEBUG: Opening hands drawn, starting mulligan process...")
+        
+        # Set mulligan in progress - drag/drop disabled
+        self.mulligan_in_progress = True
+        print(f"👁️  MULLIGAN IN PROGRESS - Card dragging disabled (viewing allowed)")
+        
+        # Initialize mulligan counters
         for pl in self.game.players:
             if not hasattr(pl, 'hand'):
                 pl.hand = []
@@ -905,35 +990,92 @@ class GameAppAPI:
             while True:
                 hand_names = ", ".join(c.name for c in human.hand)
                 box = QMessageBox(host)            # CHANGED parent
-                box.setWindowTitle("Opening Hand")
+                box.setWindowTitle("Opening Hand - Mulligan Decision")
+                # Make dialog non-modal so players can interact with game window
+                box.setModal(False)
+                # No WindowStaysOnTopHint - let players click on game window
+                box.show()
+                # Show mulligan count info
+                mulligan_info = ""
+                if human.mulligans_taken == 0:
+                    mulligan_info = "London Mulligan: Shuffle back → Draw 7 → Put N on bottom"
+                    if is_multi:
+                        mulligan_info += "\n(First mulligan is free in multiplayer)"
+                else:
+                    cards_to_bottom = human.mulligans_taken if not (is_multi and human.mulligans_taken == 1) else 0
+                    mulligan_info = f"Mulligans taken: {human.mulligans_taken}"
+                    if cards_to_bottom > 0:
+                        mulligan_info += f"\nWill put {cards_to_bottom} cards on bottom after drawing"
+                
                 box.setText(
                     f"Opening Hand ({len(human.hand)}):\n{hand_names or '(empty)'}\n\n"
-                    "Mulligan? (London mulligan: draw 7; bottom cards = mulligans taken"
-                    f"{' (first free in multiplayer)' if is_multi else ''})"
+                    f"{mulligan_info}\n\nMulligan?"
                 )
                 mull_btn = box.addButton("Mulligan", QMessageBox.DestructiveRole)
                 keep_btn = box.addButton("Keep", QMessageBox.AcceptRole)
                 result = box.exec()
                 if box.clickedButton() is keep_btn:
                     break
+                # London Mulligan (Official MTG Rules CR 103.5)
                 human.mulligans_taken += 1
+                
+                # Step 1: Shuffle hand back into library
                 returned = human.hand[:]
                 human.hand.clear()
                 human.library = returned + human.library
                 random.shuffle(human.library)
+                
+                # Step 2: Draw 7 cards (always 7 for London mulligan)
                 for _ in range(7):
                     if human.library:
                         human.hand.append(human.library.pop(0))
-                effective = human.mulligans_taken - (1 if is_multi and human.mulligans_taken == 1 else 0)
-                if effective > 0 and len(human.hand) > effective:
-                    idxs = random.sample(range(len(human.hand)), effective)
+                
+                # Step 3: Put cards on bottom equal to mulligans taken
+                # In multiplayer Commander, first mulligan is free
+                cards_to_bottom = human.mulligans_taken
+                if is_multi and human.mulligans_taken == 1:
+                    cards_to_bottom = 0  # First mulligan is free in multiplayer
+                
+                if cards_to_bottom > 0 and len(human.hand) >= cards_to_bottom:
+                    # Player chooses which cards to put on bottom
+                    # For AI/automated: randomly select cards
+                    idxs = random.sample(range(len(human.hand)), cards_to_bottom)
                     idxs.sort(reverse=True)
                     moving = [human.hand.pop(i) for i in idxs]
+                    # Put on bottom of library (not shuffled)
                     human.library.extend(moving)
+                
+                # Refresh UI to show new hand after mulligan
+                try:
+                    self._force_immediate_ui_refresh()
+                    QApplication.processEvents()
+                except Exception as e:
+                    print(f"⚠️  Mulligan UI refresh failed: {e}")
         self._opening_sequence_done = True
         setattr(self.game, '_opening_hands_deferred', False)
         
-        # Mulligan sequence complete
+        # Clear mulligan flag - card dragging now allowed
+        self.mulligan_in_progress = False
+        print(f"✅ MULLIGAN COMPLETE - Card dragging now enabled")
+        
+        # Advance to first main phase after mulligan completion
+        self.controller.log_phase()
+        self._phase_ui()
+        
+        # Set the game to first main phase
+        from engine.phase_hooks import set_phase
+        set_phase(self.controller, 'main1')
+        
+        # Sync phase state and refresh UI
+        if hasattr(self.controller, 'sync_phase_state'):
+            self.controller.sync_phase_state()
+        self._force_immediate_ui_refresh()
+        
+        # Force board window focus after game starts
+        if self.board_window:
+            self.board_window.show()
+            self.board_window.raise_()
+            self.board_window.activateWindow()
 
     def _phase_ui(self):
         """

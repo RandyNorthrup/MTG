@@ -41,7 +41,7 @@ class Permanent:
         """Tap this permanent (CR 701.21a)."""
         if self.can_be_tapped():
             self.tapped = True
-            self.card.set_orientation(45)  # UI feedback
+            self.card.set_orientation(90)  # UI feedback - 90 degrees clockwise
 
     def untap(self):
         """Untap this permanent (CR 701.21b)."""

@@ -578,6 +578,20 @@ class BattlefieldZone(QWidget):
         # Battlefield cards cannot be dragged back to hand
         widget = create_card_widget(card, QSize(90, 120), api=api, location="battlefield")
         
+        # Sync permanent state with widget if permanents are available
+        if hasattr(self, 'permanents') and self.permanents:
+            for perm in self.permanents:
+                # Find matching permanent for this card
+                perm_card = perm.card if hasattr(perm, 'card') else perm
+                if perm_card == card:
+                    # Sync tapped state
+                    if hasattr(perm, 'tapped') and perm.tapped:
+                        widget.is_tapped = True
+                        widget.rotation_angle = widget.tap_angle  # Set to 90 degrees
+                        widget.update()  # Trigger visual update
+                        print(f"🔄 Synced tapped state for {getattr(card, 'name', 'Unknown')}: tapped={perm.tapped}")
+                    break
+        
         # Connect signals to board handlers
         widget.card_clicked.connect(self.card_clicked.emit)
         widget.card_right_clicked.connect(lambda c, pos: self.card_right_clicked.emit(c))
@@ -1659,11 +1673,13 @@ class EnhancedGameBoard(QMainWindow):
                 if hasattr(self, 'player_creatures_battlefield'):
                     creature_cards = [perm.card if hasattr(perm, 'card') else perm for perm in creatures]
                     self.player_creatures_battlefield.cards = creature_cards
+                    self.player_creatures_battlefield.permanents = creatures  # Store permanents for state sync
                     self.player_creatures_battlefield.refresh_display()
                 
                 if hasattr(self, 'player_lands_battlefield'):
                     land_cards = [perm.card if hasattr(perm, 'card') else perm for perm in lands_etc]
                     self.player_lands_battlefield.cards = land_cards
+                    self.player_lands_battlefield.permanents = lands_etc  # Store permanents for state sync
                     self.player_lands_battlefield.refresh_display()
                 
                 # Player hand
@@ -1680,10 +1696,12 @@ class EnhancedGameBoard(QMainWindow):
                     
                     if hasattr(self, 'opponent_creatures_battlefield'):
                         self.opponent_creatures_battlefield.cards = [perm.card if hasattr(perm, 'card') else perm for perm in opp_creatures]
+                        self.opponent_creatures_battlefield.permanents = opp_creatures  # Store permanents for state sync
                         self.opponent_creatures_battlefield.refresh_display()
                     
                     if hasattr(self, 'opponent_lands_battlefield'):
                         self.opponent_lands_battlefield.cards = [perm.card if hasattr(perm, 'card') else perm for perm in opp_lands_etc]
+                        self.opponent_lands_battlefield.permanents = opp_lands_etc  # Store permanents for state sync
                         self.opponent_lands_battlefield.refresh_display()
                     
                     # Opponent hand
