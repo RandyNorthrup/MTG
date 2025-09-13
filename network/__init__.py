@@ -13,6 +13,16 @@ Components:
 __version__ = "1.0.0"
 __author__ = "MTG Commander Game Team"
 
+# Network configuration constants (define first to avoid circular imports)
+DEFAULT_SERVER_HOST = "localhost"
+DEFAULT_SERVER_PORT = 8888
+MAX_PLAYERS = 4
+HEARTBEAT_INTERVAL = 30  # seconds
+CONNECTION_TIMEOUT = 60  # seconds
+MESSAGE_TIMEOUT = 10  # seconds
+RECONNECT_ATTEMPTS = 5
+RECONNECT_DELAY = 2  # seconds
+
 # Import core networking components
 from .message_protocol import (
     MessageType,
@@ -22,19 +32,34 @@ from .message_protocol import (
     deserialize_message
 )
 
-from .network_client import NetworkClient, ClientState
-from .game_server import GameServer, ServerState
-from .network_game_controller import NetworkGameController
+# Lazy import to avoid circular dependencies
+def _get_network_client():
+    from .network_client import NetworkClient, ClientState
+    return NetworkClient, ClientState
 
-# Network configuration constants
-DEFAULT_SERVER_HOST = "localhost"
-DEFAULT_SERVER_PORT = 8888
-MAX_PLAYERS = 4
-HEARTBEAT_INTERVAL = 30  # seconds
-CONNECTION_TIMEOUT = 60  # seconds
-MESSAGE_TIMEOUT = 10  # seconds
-RECONNECT_ATTEMPTS = 5
-RECONNECT_DELAY = 2  # seconds
+def _get_game_server():
+    from .game_server import GameServer, ServerState
+    return GameServer, ServerState
+
+def _get_network_game_controller():
+    from .network_game_controller import NetworkGameController
+    return NetworkGameController
+
+# Try to import components, but don't fail if there are issues
+try:
+    from .network_client import NetworkClient, ClientState
+except ImportError:
+    NetworkClient, ClientState = None, None
+
+try:
+    from .game_server import GameServer, ServerState
+except ImportError:
+    GameServer, ServerState = None, None
+
+try:
+    from .network_game_controller import NetworkGameController
+except ImportError:
+    NetworkGameController = None
 
 __all__ = [
     "MessageType",

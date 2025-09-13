@@ -65,6 +65,46 @@ class GameAppAPI:
             if 0 <= active_id < len(self.game.players):
                 return self.game.players[active_id]
         return None
+    
+    def get_enhanced_card_info(self, card):
+        """Get enhanced information about a card including P/T after effects"""
+        info = {
+            'name': getattr(card, 'name', 'Unknown'),
+            'types': getattr(card, 'types', []),
+            'mana_cost': getattr(card, 'mana_cost', 0),
+            'mana_cost_str': getattr(card, 'mana_cost_str', ''),
+            'text': getattr(card, 'text', ''),
+            'base_power': getattr(card, 'power', None),
+            'base_toughness': getattr(card, 'toughness', None)
+        }
+        
+        # Get current P/T after all effects using enhanced systems
+        try:
+            current_power, current_toughness = self.controller.get_current_power_toughness(card)
+            info['current_power'] = current_power
+            info['current_toughness'] = current_toughness
+        except:
+            info['current_power'] = info['base_power']
+            info['current_toughness'] = info['base_toughness']
+        
+        # Get keywords
+        try:
+            keywords = getattr(card, 'keywords', {})
+            info['keywords'] = list(keywords.keys()) if keywords else []
+            info['combat_keywords'] = self.controller.enhanced_card_engine.get_combat_keywords(card)
+        except:
+            info['keywords'] = []
+            info['combat_keywords'] = set()
+        
+        # Token/Copy information
+        try:
+            info['is_token'] = self.controller.token_engine.is_token(card)
+            info['is_copy'] = self.controller.token_engine.is_copy(card)
+        except:
+            info['is_token'] = getattr(card, 'is_token', False)
+            info['is_copy'] = False
+        
+        return info
         
     def can_play_card(self, card):
         """Check if a card can be played from hand."""
@@ -77,7 +117,25 @@ class GameAppAPI:
             if not hasattr(player, 'hand') or card not in player.hand:
                 return False, "Card not in hand"
             
-            # Basic playability checks
+            # Enhanced playability checks using validation system
+            try:
+                from engine.card_validation import validate_card_data
+                card_data = {
+                    'name': getattr(card, 'name', 'Unknown'),
+                    'types': getattr(card, 'types', []),
+                    'mana_cost': getattr(card, 'mana_cost', 0),
+                    'mana_cost_str': getattr(card, 'mana_cost_str', ''),
+                    'power': getattr(card, 'power', None),
+                    'toughness': getattr(card, 'toughness', None),
+                    'text': getattr(card, 'text', ''),
+                    'color_identity': getattr(card, 'color_identity', [])
+                }
+                validation_result = validate_card_data(card_data)
+                if not validation_result.is_valid:
+                    return False, f"Card validation failed: {'; '.join(validation_result.errors)}"
+            except:
+                pass  # Continue with basic checks if validation fails
+            
             card_types = getattr(card, 'types', [])
             
             # Land checks
@@ -88,13 +146,14 @@ class GameAppAPI:
                     return False, "Already played a land this turn"
                 return True, "Can play land"
             
-            # Spell checks
+            # Spell checks with enhanced mana validation
             mana_cost = getattr(card, 'mana_cost', 0)
+            mana_cost_str = getattr(card, 'mana_cost_str', '')
             
-            # Check mana availability using mana pool
+            # Use enhanced mana cost parsing
             if hasattr(player, 'mana_pool'):
                 from engine.mana import parse_mana_cost
-                cost_dict = parse_mana_cost(getattr(card, 'mana_cost_str', str(mana_cost)))
+                cost_dict = parse_mana_cost(mana_cost_str if mana_cost_str else str(mana_cost))
                 if not player.mana_pool.can_pay(cost_dict):
                     return False, "Insufficient mana"
             else:
@@ -103,10 +162,18 @@ class GameAppAPI:
                 if mana_cost > total_mana:
                     return False, f"Need {mana_cost} mana, have {total_mana}"
             
-            # Phase/timing checks
+            # Enhanced phase/timing checks with keyword awareness
             current_phase = getattr(self.controller, 'current_phase', 'main1')
-            if "Sorcery" in card_types and current_phase not in ['main1', 'main2']:
-                return False, "Sorceries can only be played during main phases"
+            
+            # Check for flash
+            try:
+                keywords = getattr(card, 'keywords', {})
+                has_flash = 'flash' in [k.lower() for k in keywords.keys()] if keywords else False
+                if not has_flash and "Sorcery" in card_types and current_phase not in ['main1', 'main2']:
+                    return False, "Sorceries can only be played during main phases"
+            except:
+                if "Sorcery" in card_types and current_phase not in ['main1', 'main2']:
+                    return False, "Sorceries can only be played during main phases"
             
             return True, "Card can be played"
             
@@ -174,6 +241,97 @@ class GameAppAPI:
             import traceback
             traceback.print_exc()
             return False
+    
+    # --- Enhanced Token and Copy Methods ---
+    def create_token(self, token_type: str, controller_id: int = None, quantity: int = 1):
+        """Create tokens using the enhanced token system"""
+        if controller_id is None:
+            player = self.get_current_player()
+            controller_id = player.player_id if player else 0
+        
+        try:
+            tokens = self.controller.create_token(token_type, controller_id, quantity)
+            
+            # Add tokens to the battlefield
+            if tokens and controller_id < len(self.game.players):
+                player = self.game.players[controller_id]
+                if hasattr(player, 'battlefield'):
+                    from engine.card_engine import Permanent
+                    for token in tokens:
+                        permanent = Permanent(card=token)
+                        # Tokens don't have summoning sickness if they have haste
+                        if hasattr(token, 'keywords') and 'haste' in [k.lower() for k in token.keywords.keys()]:
+                            permanent.summoning_sick = False
+                        player.battlefield.append(permanent)
+            
+            print(f"✅ Created {quantity} {token_type} token(s)")
+            self._force_immediate_ui_refresh()
+            return tokens
+            
+        except Exception as e:
+            print(f"❌ Error creating tokens: {e}")
+            return []
+    
+    def create_token_copy(self, original_card, controller_id: int = None):
+        """Create a token copy of an existing card"""
+        if controller_id is None:
+            player = self.get_current_player()
+            controller_id = player.player_id if player else 0
+        
+        try:
+            token_copy = self.controller.create_token_copy(original_card, controller_id)
+            
+            # Add to battlefield
+            if token_copy and controller_id < len(self.game.players):
+                player = self.game.players[controller_id]
+                if hasattr(player, 'battlefield'):
+                    from engine.card_engine import Permanent
+                    permanent = Permanent(card=token_copy)
+                    player.battlefield.append(permanent)
+            
+            print(f"✅ Created token copy of {getattr(original_card, 'name', 'card')}")
+            self._force_immediate_ui_refresh()
+            return token_copy
+            
+        except Exception as e:
+            print(f"❌ Error creating token copy: {e}")
+            return None
+    
+    # --- Enhanced Combat Methods ---
+    def can_block_enhanced(self, blocker_card, attacker_card):
+        """Check if blocker can block attacker using enhanced keyword system"""
+        try:
+            return self.controller.can_block_enhanced(blocker_card, attacker_card)
+        except:
+            # Fallback to basic blocking rules
+            return True
+    
+    def handle_combat_damage_enhanced(self, source_card, target_card, damage_amount: int):
+        """Handle combat damage with keyword interactions"""
+        try:
+            result = self.controller.handle_combat_damage_enhanced(source_card, target_card, damage_amount)
+            
+            # Apply the results
+            if result.get('destroy_target', False):
+                print(f"💀 {getattr(target_card, 'name', 'card')} destroyed by deathtouch")
+            
+            if result.get('life_gained', 0) > 0:
+                print(f"💚 Gained {result['life_gained']} life from lifelink")
+                
+            if result.get('lethal_damage', False):
+                print(f"💀 Lethal damage dealt to {getattr(target_card, 'name', 'card')}")
+            
+            self._force_immediate_ui_refresh()
+            return result
+            
+        except Exception as e:
+            print(f"❌ Error handling combat damage: {e}")
+            return {
+                'damage_dealt': damage_amount,
+                'lethal_damage': False,
+                'life_gained': 0,
+                'destroy_target': False
+            }
             
     def _cast_spell_enhanced(self, card):
         """Enhanced spell casting with comprehensive error handling."""

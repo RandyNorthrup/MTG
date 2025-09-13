@@ -554,7 +554,7 @@ class BattlefieldZone(ZoneWidget):
         elif "Creature" in card_types:
             self.creatures.append(card)
             self.creatures_layout.add_card_widget(card_widget)
-            # New creatures have summoning sickness
+            # CR 302.6: New creatures have summoning sickness unless they have haste
             card_widget.set_summoning_sick(True)
         else:
             self.other_permanents.append(card)
@@ -676,7 +676,8 @@ class EnhancedBattlefieldLayout(QWidget):
         """Untap all permanents (start of turn)."""
         self.battlefield.untap_all()
         
-        # Remove summoning sickness
+        # CR 302.6: Remove summoning sickness from creatures controlled since start of turn
+        # In a proper implementation, this would check controller and control duration
         for card in self.battlefield.creatures:
             self.battlefield.set_card_summoning_sick(card, False)
             

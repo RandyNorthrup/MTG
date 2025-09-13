@@ -120,19 +120,33 @@ class GameState:
     # ---- Turn / Phase Management ----
     def _start_new_turn(self):
         self.turn += 1
+        # Switch to the new active player first
         self.active_player = self.other_player(self.active_player)
+        
+        # CR 302.6: Remove summoning sickness from permanents controlled by the (now) active player
+        active_player_obj = self.players[self.active_player]
+        for perm in active_player_obj.battlefield:
+            perm.summoning_sick = False
+        
+        # Reset land played flags for all players
         for p in self.players:
-            for perm in p.battlefield:
-                perm.summoning_sick = False
             self.land_played_this_turn[p.player_id] = False
 
     def _perform_phase_actions(self, phase: str):
         if phase == "UNTAP":
             for perm in self.players[self.active_player].battlefield:
                 perm.tapped = False
+                # CR 302.6: Remove summoning sickness at start of controller's turn
+                perm.summoning_sick = False
             self.players[self.active_player].reset_mana()
         elif phase == "UPKEEP":
-            pass
+            # Emit beginning of upkeep event
+            try:
+                from engine.ability_engine import emit_game_event, TriggerCondition
+                emit_game_event(TriggerCondition.BEGINNING_OF_UPKEEP, 
+                              controller=self.active_player)
+            except ImportError:
+                pass
         elif phase == "DRAW":
             self.players[self.active_player].draw(1)
         elif phase == "COMBAT_DAMAGE":
@@ -183,8 +197,19 @@ class GameState:
         if card not in ps.hand:
             return ActionResult.ILLEGAL
         ps.hand.remove(card)
-        ps.battlefield.append(Permanent(card=card, summoning_sick=False))
+        # CR 302.6: Lands don't have summoning sickness
+        perm = Permanent(card=card, summoning_sick=False)
+        ps.battlefield.append(perm)
         self.land_played_this_turn[pid] = True
+        
+        # Emit ETB event for ability triggers
+        try:
+            from engine.ability_engine import emit_game_event, TriggerCondition
+            emit_game_event(TriggerCondition.ENTERS_BATTLEFIELD, 
+                          affected=card, controller=pid)
+        except ImportError:
+            pass
+            
         return ActionResult.OK
 
     def tap_for_mana(self, pid: int, perm: Permanent):
@@ -208,7 +233,9 @@ class GameState:
         ps.mana_pool.pay(cost_dict)
         if card in ps.hand:
             ps.hand.remove(card)
-        ps.battlefield.append(Permanent(card=card))
+        # CR 302.6: Creatures have summoning sickness when they enter battlefield
+        has_summoning_sickness = 'Creature' in card.types
+        ps.battlefield.append(Permanent(card=card, summoning_sick=has_summoning_sickness))
         return ActionResult.OK
 
     def cast_spell(self, pid: int, card: Card) -> ActionResult:
@@ -227,7 +254,9 @@ class GameState:
                     cost_dict['C'] = cost_dict.get('C', 0) + tax
                 if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
                     ps.command.remove(card)
-                    ps.battlefield.append(Permanent(card=card))
+                    # CR 302.6: Creatures have summoning sickness when they enter battlefield
+                    has_summoning_sickness = 'Creature' in card.types
+                    ps.battlefield.append(Permanent(card=card, summoning_sick=has_summoning_sickness))
                     ps.commander_tracker.note_cast(card.id)
                     return ActionResult.OK
                 return ActionResult.ILLEGAL
@@ -248,7 +277,19 @@ class GameState:
                 cost_dict = parse_mana_cost(card.mana_cost_str)
                 if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
                     ps.hand.remove(card)
-                    ps.battlefield.append(Permanent(card=card))
+                    # CR 302.6: Creatures have summoning sickness when they enter battlefield
+                    has_summoning_sickness = 'Creature' in card.types
+                    perm = Permanent(card=card, summoning_sick=has_summoning_sickness)
+                    ps.battlefield.append(perm)
+                    
+                    # Emit ETB event for ability triggers
+                    try:
+                        from engine.ability_engine import emit_game_event, TriggerCondition
+                        emit_game_event(TriggerCondition.ENTERS_BATTLEFIELD, 
+                                      affected=card, controller=pid)
+                    except ImportError:
+                        pass
+                    
                     return ActionResult.OK
                 return ActionResult.ILLEGAL
             else:
@@ -256,7 +297,9 @@ class GameState:
                 cost_dict = {'C': card.mana_cost}  # Treat as generic mana cost
                 if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
                     ps.hand.remove(card)
-                    ps.battlefield.append(Permanent(card=card))
+                    # CR 302.6: Creatures have summoning sickness when they enter battlefield
+                    has_summoning_sickness = 'Creature' in card.types
+                    ps.battlefield.append(Permanent(card=card, summoning_sick=has_summoning_sickness))
                     return ActionResult.OK
                 return ActionResult.ILLEGAL
 
@@ -286,7 +329,9 @@ class GameState:
                 cost_dict = parse_mana_cost(card.mana_cost_str)
                 if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
                     ps.hand.remove(card)
-                    ps.battlefield.append(Permanent(card=card))
+                    # CR 302.6: Non-creature artifacts/enchantments don't have summoning sickness
+                    has_summoning_sickness = 'Creature' in card.types
+                    ps.battlefield.append(Permanent(card=card, summoning_sick=has_summoning_sickness))
                     return ActionResult.OK
                 return ActionResult.ILLEGAL
             else:
@@ -294,7 +339,9 @@ class GameState:
                 cost_dict = {'C': card.mana_cost}  # Treat as generic mana cost
                 if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
                     ps.hand.remove(card)
-                    ps.battlefield.append(Permanent(card=card))
+                    # CR 302.6: Non-creature artifacts/enchantments don't have summoning sickness
+                    has_summoning_sickness = 'Creature' in card.types
+                    ps.battlefield.append(Permanent(card=card, summoning_sick=has_summoning_sickness))
                     return ActionResult.OK
                 return ActionResult.ILLEGAL
 
@@ -305,7 +352,9 @@ class GameState:
                 cost_dict = parse_mana_cost(card.mana_cost_str)
                 if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
                     ps.hand.remove(card)
-                    ps.battlefield.append(Permanent(card=card))
+                    # CR 302.6: Non-creature enchantments don't have summoning sickness
+                    has_summoning_sickness = 'Creature' in card.types
+                    ps.battlefield.append(Permanent(card=card, summoning_sick=has_summoning_sickness))
                     return ActionResult.OK
                 return ActionResult.ILLEGAL
             else:
@@ -313,7 +362,9 @@ class GameState:
                 cost_dict = {'C': card.mana_cost}  # Treat as generic mana cost
                 if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
                     ps.hand.remove(card)
-                    ps.battlefield.append(Permanent(card=card))
+                    # CR 302.6: Non-creature enchantments don't have summoning sickness
+                    has_summoning_sickness = 'Creature' in card.types
+                    ps.battlefield.append(Permanent(card=card, summoning_sick=has_summoning_sickness))
                     return ActionResult.OK
                 return ActionResult.ILLEGAL
 

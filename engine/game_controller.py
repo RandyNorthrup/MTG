@@ -14,6 +14,14 @@ from engine.phase_hooks import (
 )
 from engine.stack import StackEngine
 
+# Enhanced systems imports
+from engine.layers import LayersEngine
+from engine.enhanced_keywords import KeywordProcessor, extract_card_keywords
+from engine.card_validation import CardValidator
+from engine.tokens_and_copies import TokenAndCopyEngine, set_token_engine
+from engine.enhanced_integration import EnhancedCardEngine
+from engine.ability_engine import AbilityEngine, set_ability_engine, TriggerCondition, emit_game_event
+
 class GameController:
     """Core game controller that manages MTG game flow and state.
     
@@ -39,6 +47,20 @@ class GameController:
         self.game = game
         self.logging_enabled = logging_enabled
         
+        # Initialize enhanced systems
+        self.layers_engine = LayersEngine()
+        self.keyword_processor = KeywordProcessor()
+        self.card_validator = CardValidator()
+        self.token_engine = TokenAndCopyEngine(layers_engine=self.layers_engine)
+        self.enhanced_card_engine = EnhancedCardEngine()
+        
+        # Initialize ability engine
+        self.ability_engine = AbilityEngine(self.game)
+        set_ability_engine(self.ability_engine)
+        
+        # Set global token engine reference
+        set_token_engine(self.token_engine)
+        
         # Initialize AI controllers
         self.ai_controllers: Dict[int, BasicAI] = {
             pid: BasicAI(pid=pid) for pid in ai_ids
@@ -58,6 +80,95 @@ class GameController:
         
         # Initialize stack engine for spell/ability resolution
         self.stack_engine = StackEngine(self.game, logging_enabled=logging_enabled)
+        
+        # Enhance existing cards with new systems
+        self._enhance_existing_cards()
+        
+    def _enhance_existing_cards(self):
+        """Apply enhanced systems to all existing cards in the game"""
+        try:
+            for player in self.game.players:
+                # Enhance cards in all zones
+                zones = [
+                    getattr(player, 'library', []),
+                    getattr(player, 'hand', []),
+                    getattr(player, 'graveyard', []),
+                    getattr(player, 'exile', [])
+                ]
+                
+                # Also enhance battlefield cards
+                if hasattr(player, 'battlefield'):
+                    battlefield_cards = [perm.card for perm in player.battlefield if hasattr(perm, 'card')]
+                    zones.append(battlefield_cards)
+                
+                # Process commander if present
+                if hasattr(player, 'commander') and player.commander:
+                    zones.append([player.commander])
+                
+                for zone in zones:
+                    for card in zone:
+                        if hasattr(card, 'set_layers_engine'):
+                            card.set_layers_engine(self.layers_engine)
+                        
+                        # Extract and cache keywords
+                        if hasattr(card, 'text') and card.text:
+                            keywords = extract_card_keywords(card.text)
+                            card.keywords = keywords
+                        
+                        # Register abilities with ability engine
+                        self.ability_engine.register_card(card)
+                            
+        except Exception as e:
+            if self.logging_enabled:
+                print(f"Warning: Error enhancing existing cards: {e}")
+    
+    def create_enhanced_card(self, card_data: Dict, owner_id: int):
+        """Create an enhanced card with all validation and systems applied"""
+        return self.enhanced_card_engine.create_enhanced_card(card_data, owner_id)
+    
+    def get_current_power_toughness(self, card):
+        """Get current power/toughness after all effects"""
+        return card.get_current_power_toughness()
+    
+    def add_static_buff(self, source_card, target_predicate, power: int, toughness: int):
+        """Add a static power/toughness buff effect"""
+        return self.enhanced_card_engine.add_static_buff(source_card, target_predicate, power, toughness)
+    
+    def create_token(self, token_type: str, controller_id: int, quantity: int = 1):
+        """Create tokens of a specific type"""
+        return self.token_engine.create_token(token_type, controller_id, quantity)
+    
+    def create_token_copy(self, original_card, controller_id: int):
+        """Create a token copy of an existing card"""
+        return self.token_engine.create_token_copy(original_card, controller_id)
+    
+    def can_block_enhanced(self, blocker_card, attacker_card) -> bool:
+        """Check if blocker can block attacker using enhanced keyword system"""
+        return self.enhanced_card_engine.can_block(blocker_card, attacker_card)
+    
+    def handle_combat_damage_enhanced(self, source_card, target_card, damage_amount: int):
+        """Handle combat damage with keyword interactions"""
+        return self.enhanced_card_engine.handle_combat_damage(source_card, target_card, damage_amount)
+    
+    def get_activated_abilities(self, card) -> list:
+        """Get all activated abilities for a card"""
+        return self.ability_engine.get_activated_abilities(card)
+    
+    def can_activate_ability(self, player_id: int, card, ability_index: int) -> bool:
+        """Check if a player can activate an ability"""
+        return self.ability_engine.can_activate_ability(player_id, card, ability_index)
+    
+    def activate_ability(self, player_id: int, card, ability_index: int, targets: list = None) -> bool:
+        """Activate an ability"""
+        result = self.ability_engine.activate_ability(player_id, card, ability_index, targets)
+        if result:
+            # Process any triggered abilities that may have been queued
+            self.ability_engine.process_triggered_abilities()
+        return result
+    
+    def process_triggers(self):
+        """Process all pending triggered abilities"""
+        self.ability_engine.process_triggered_abilities()
 
     def log_phase(self):
         """Log phase changes for debugging purposes."""
@@ -385,6 +496,9 @@ class GameController:
                             # Execute controller phase actions (this handles draw, untap, etc.)
                             from engine.phase_hooks import _execute_phase_actions
                             _execute_phase_actions(self, controller_phase)
+                            
+                            # Process any triggered abilities from phase actions
+                            self.ability_engine.process_triggered_abilities()
                             
                             # Force UI refresh after phase actions
                             if hasattr(self, '_api_ref') and self._api_ref:

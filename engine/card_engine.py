@@ -2,6 +2,13 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 import re
 
+# Import layers system for proper power/toughness calculation
+try:
+    from engine.layers import LayersEngine, CharacteristicState
+except ImportError:
+    LayersEngine = None
+    CharacteristicState = None
+
 @dataclass
 class Card:
     id: str
@@ -18,6 +25,20 @@ class Card:
     controller_id: int = -1
     # Note: Only permanents can be tapped per CR 400.3 - tap state moved to Permanent class
     orientation: int = 0  # UI rotation (0 = untapped, 45 = tapped, 90 = untapped)
+    
+    # Layers system integration
+    _layers_engine: Optional['LayersEngine'] = None
+    
+    def get_current_power_toughness(self) -> tuple[Optional[int], Optional[int]]:
+        """Get current power/toughness after applying all continuous effects"""
+        if self._layers_engine and CharacteristicState:
+            state = self._layers_engine.get_characteristic_state(self)
+            return state.current_power, state.current_toughness
+        return self.power, self.toughness
+    
+    def set_layers_engine(self, engine: 'LayersEngine'):
+        """Associate this card with a layers engine for proper P/T calculation"""
+        self._layers_engine = engine
 
     #def __hash__(self) -> int:
         #return hash(self.id)

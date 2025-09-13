@@ -159,11 +159,54 @@ class StackEngine:
             pass
 
     def pass_priority(self, player_id: int):
-        # For multiplayer, track priority order and pass count.
-        # For now, assume two-player and resolve immediately if both pass.
-        if self.can_resolve():
-            self.resolve_top()
-        else:
-            if self.logging_enabled:
-                # All players passed, phase/step ends (debug print removed)
-                pass
+        """Handle priority passing in the stack engine
+        
+        This method coordinates with the priority manager to ensure
+        proper CR 116 compliance for stack resolution timing
+        """
+        if not hasattr(self.game, 'priority_manager'):
+            # Fallback for backwards compatibility
+            if self.can_resolve():
+                self.resolve_top()
+            return
+            
+        priority_manager = self.game.priority_manager
+        
+        # Let priority manager handle the pass
+        if priority_manager.pass_priority(player_id):
+            # Check if we should resolve stack items
+            if self.can_resolve() and priority_manager.can_advance_step():
+                self.resolve_top()
+                # After resolution, check state-based actions
+                self._check_state_based_actions()
+                # Priority returns to active player after resolution
+                if not priority_manager.resolve_stack_item():
+                    # Step/phase should end
+                    return
+                    
+    def resolve_with_priority(self) -> bool:
+        """Resolve top stack item with proper priority handling per CR 608.2h
+        
+        Returns True if resolution occurred, False otherwise
+        """
+        if not self.can_resolve():
+            return False
+            
+        # Resolve the top item
+        resolved_item = self.resolve_top()
+        
+        # CR 608.2g: Check state-based actions after resolution
+        self._check_state_based_actions()
+        
+        # CR 608.2h: Active player receives priority after resolution
+        if hasattr(self.game, 'priority_manager'):
+            self.game.priority_manager.give_priority(self.game.active_player)
+            
+        return resolved_item is not None
+        
+    def _check_state_based_actions(self):
+        """Check state-based actions after stack resolution per CR 608.2g"""
+        if hasattr(self.game, 'check_state_based_actions'):
+            self.game.check_state_based_actions()
+        elif hasattr(self.game, 'state_based_actions'):
+            self.game.state_based_actions.check_and_perform(self.game)

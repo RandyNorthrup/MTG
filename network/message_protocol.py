@@ -17,10 +17,12 @@ class MessageType(Enum):
     
     # Connection Management
     JOIN_GAME = "join_game"
+    LEAVE_GAME = "leave_game"
     PLAYER_JOINED = "player_joined"
     PLAYER_LEFT = "player_left"
     HEARTBEAT = "heartbeat"
     DISCONNECT = "disconnect"
+    ACKNOWLEDGMENT = "acknowledgment"
     
     # Game State
     GAME_STATE_UPDATE = "game_state_update"
@@ -55,19 +57,19 @@ class MessageType(Enum):
     RESYNC_REQUEST = "resync_request"
 
 
-@dataclass
 class NetworkMessage:
     """A network message with metadata and payload."""
     
-    type: MessageType
-    player_id: int
-    timestamp: float
-    sequence: int
-    data: Dict[str, Any]
-    checksum: Optional[str] = None
-    
-    def __post_init__(self):
-        """Calculate checksum after initialization."""
+    def __init__(self, type=None, data=None, player_id=0, timestamp=None, sequence=0, checksum=None):
+        """Initialize NetworkMessage with flexible parameters."""
+        self.type = type
+        self.player_id = player_id
+        self.timestamp = timestamp if timestamp is not None else time.time()
+        self.sequence = sequence if sequence > 0 else 1
+        self.data = data if data is not None else {}
+        self.checksum = checksum
+        # Generate message_id for test compatibility
+        self.message_id = f"msg_{int(self.timestamp * 1000)}_{self.sequence}"
         if self.checksum is None:
             self.checksum = self._calculate_checksum()
     
@@ -87,6 +89,15 @@ class NetworkMessage:
         """Verify message integrity using checksum."""
         return self.checksum == self._calculate_checksum()
     
+    def to_bytes(self) -> bytes:
+        """Convert message to bytes for transmission."""
+        return serialize_message(self)
+    
+    @classmethod
+    def from_bytes(cls, data: bytes) -> 'NetworkMessage':
+        """Create message from bytes."""
+        return deserialize_message(data)
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert message to dictionary for serialization."""
         return {
@@ -95,13 +106,14 @@ class NetworkMessage:
             "timestamp": self.timestamp,
             "sequence": self.sequence,
             "data": self.data,
-            "checksum": self.checksum
+            "checksum": self.checksum,
+            "message_id": self.message_id
         }
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'NetworkMessage':
         """Create message from dictionary."""
-        return cls(
+        msg = cls(
             type=MessageType(data["type"]),
             player_id=data["player_id"],
             timestamp=data["timestamp"],
@@ -109,6 +121,10 @@ class NetworkMessage:
             data=data["data"],
             checksum=data.get("checksum")
         )
+        # Override message_id if provided
+        if "message_id" in data:
+            msg.message_id = data["message_id"]
+        return msg
 
 
 class MessageProtocol:
@@ -174,17 +190,18 @@ class MessageProtocol:
             "state": state_data
         })
     
-    def create_error_message(self, error_code: str, error_msg: str) -> NetworkMessage:
+    def create_error_message(self, error_msg: str, error_code: str) -> NetworkMessage:
         """Create an ERROR message."""
         return self.create_message(MessageType.ERROR, {
-            "error_code": error_code,
-            "error_message": error_msg
+            "message": error_msg,
+            "error_code": error_code
         })
     
     def create_heartbeat_message(self) -> NetworkMessage:
         """Create a HEARTBEAT message."""
         return self.create_message(MessageType.HEARTBEAT, {
-            "alive": True
+            "alive": True,
+            "timestamp": time.time()
         })
 
 
@@ -303,3 +320,9 @@ def validate_message_data(message: NetworkMessage) -> bool:
             return False
     
     return True
+
+
+def create_checksum(data: Dict[str, Any]) -> str:
+    """Create SHA-256 checksum for given data."""
+    content_str = json.dumps(data, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(content_str.encode()).hexdigest()[:16]

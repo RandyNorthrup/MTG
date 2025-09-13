@@ -29,11 +29,21 @@ def card_keywords(card) -> Set[str]:
     (StaticKeywordAbility added during oracle parsing.)
     """
     kws: Set[str] = set()
+    
+    # First check oracle_abilities for enhanced cards
     for ab in getattr(card, 'oracle_abilities', []) or []:
         if isinstance(ab, StaticKeywordAbility):
             k = ab.keyword.lower()
             if k in _COMBAT_KEYWORDS:
                 kws.add(k)
+    
+    # Fallback: simple text parsing for basic cards
+    if not kws and hasattr(card, 'text') and card.text:
+        text_lower = card.text.lower()
+        for keyword in _COMBAT_KEYWORDS:
+            if keyword in text_lower:
+                kws.add(keyword)
+    
     return kws
 
 @dataclass

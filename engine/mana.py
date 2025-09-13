@@ -106,12 +106,40 @@ class ManaPool:
             self.pool[k] = 0
             self.sources[k] = []
     
-    def empty_pool(self):
-        """Empty mana pool per CR 106.4 - happens at end of each step and phase."""
-        # In a real implementation, this would trigger mana burn in older rules
-        # Current rules: mana simply disappears
-        if any(self.pool[k] > 0 for k in self.pool):
+    def empty_pool(self) -> bool:
+        """Empty mana pool per CR 106.4 - happens at end of each step and phase.
+        
+        Returns True if mana was emptied, False if pool was already empty.
+        Per current rules, mana simply disappears (no mana burn).
+        """
+        had_mana = any(self.pool[k] > 0 for k in self.pool)
+        if had_mana:
             self.clear()
+        return had_mana
+        
+    def should_empty_now(self, game_context: str = "step_end") -> bool:
+        """Check if mana pool should empty now per CR 106.4
+        
+        Args:
+            game_context: When this check is happening ("step_end", "phase_end")
+        """
+        # CR 106.4: Mana pools empty at the end of each step and phase
+        return game_context in ["step_end", "phase_end"] and any(self.pool[k] > 0 for k in self.pool)
+        
+    def get_mana_summary(self) -> str:
+        """Get human-readable summary of mana in pool"""
+        active_mana = {k: v for k, v in self.pool.items() if v > 0}
+        if not active_mana:
+            return "Empty"
+        
+        parts = []
+        for color in ['W', 'U', 'B', 'R', 'G']:
+            if active_mana.get(color, 0) > 0:
+                parts.append(f"{color}:{active_mana[color]}")
+        if active_mana.get(GENERIC_KEY, 0) > 0:
+            parts.append(f"C:{active_mana[GENERIC_KEY]}")
+            
+        return ", ".join(parts)
 
     def tap_land_for_mana(self, land_perm, symbol: str):
         """

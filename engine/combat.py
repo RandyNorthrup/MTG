@@ -15,44 +15,109 @@ class CombatManager:
 
     # ---- Declaration phase ----
     def toggle_attacker(self, player_id: int, perm):
+        """Toggle a creature as an attacker following MTG Comprehensive Rules 508.1"""
         if self.game.active_player != player_id:
-            return
+            return  # Only active player can declare attackers
+        
         if 'Creature' not in perm.card.types:
+            return  # Only creatures can attack (CR 508.1a)
+        
+        if perm.tapped:
+            return  # Tapped creatures can't attack (CR 508.1c)
+        
+        # Check for summoning sickness (CR 302.6 and CR 508.1c)
+        if perm.summoning_sick:
+            # Check if creature has haste (CR 508.1c)
+            creature_keywords = card_keywords(perm.card)
+            if 'haste' not in creature_keywords:
+                return  # Creature with summoning sickness can't attack unless it has haste
+        
+        # Check for other attack restrictions
+        if not self._can_attack(perm):
             return
-        if perm.tapped:  # simplistic summoning sickness / tapped check
-            return
-        # Haste handling skipped (no summoning sickness model). Accept as-is.
+        
+        # Toggle attacker status
         if perm in self.state.attackers:
             self.state.attackers.remove(perm)
         else:
             self.state.attackers.append(perm)
+            
+            # Emit attack event for triggered abilities
+            try:
+                from engine.ability_engine import emit_game_event, TriggerCondition
+                emit_game_event(TriggerCondition.ATTACKS, 
+                              source=perm.card, controller=player_id)
+            except ImportError:
+                pass
 
     def attackers_committed(self):
         self.state.committed = True
 
     # ---- Block assignment (defending player) ----
-    def toggle_blocker(self, defending_player_id: int, blocker_perm, attacker_perm):
-        if self.state.committed is False:
-            return
-        if 'Creature' not in blocker_perm.card.types:
-            return
-        if blocker_perm.tapped:
-            return
-        # Flying restriction (attacker with flying requires blocker with flying or reach)
+    def _can_attack(self, perm) -> bool:
+        """Check if a creature can attack according to MTG rules."""
+        # Basic checks already done in toggle_attacker
+        # This is for additional attack restrictions that could be added later
+        # For example: "Creatures you control can't attack" effects
+        return True
+    
+    def _can_block(self, blocker_perm, attacker_perm) -> bool:
+        """Check if a blocker can block an attacker according to MTG CR 509.1"""
         atk_kws = card_keywords(attacker_perm.card)
         blk_kws = card_keywords(blocker_perm.card)
+        
+        # CR 509.1b: Creature with flying can only be blocked by creatures with flying or reach
         if 'flying' in atk_kws and not (('flying' in blk_kws) or ('reach' in blk_kws)):
+            return False
+        
+        # CR 509.1c: Landwalk abilities (simplified - would need to check land types)
+        # This would require more complex land type checking
+        
+        # CR 509.1d: Creature with fear can only be blocked by artifact or black creatures
+        if 'fear' in atk_kws:
+            if 'Artifact' not in blocker_perm.card.types and 'Black' not in getattr(blocker_perm.card, 'colors', []):
+                return False
+        
+        # CR 509.1e: Creature with intimidate can only be blocked by artifact creatures or creatures that share a color
+        if 'intimidate' in atk_kws:
+            blocker_colors = getattr(blocker_perm.card, 'colors', [])
+            attacker_colors = getattr(attacker_perm.card, 'colors', [])
+            if 'Artifact' not in blocker_perm.card.types and not any(c in blocker_colors for c in attacker_colors):
+                return False
+        
+        # Additional blocking restrictions can be added here
+        return True
+    
+    def toggle_blocker(self, defending_player_id: int, blocker_perm, attacker_perm):
+        """Toggle a creature as a blocker following MTG Comprehensive Rules 509.1"""
+        if self.state.committed is False:
+            return  # Can only declare blockers after attackers are committed
+        
+        if self.game.active_player == defending_player_id:
+            return  # Defending player (not active player) declares blockers
+        
+        if 'Creature' not in blocker_perm.card.types:
+            return  # Only creatures can block (CR 509.1a)
+        
+        if blocker_perm.tapped:
+            return  # Tapped creatures can't block (CR 509.1a)
+        
+        if attacker_perm not in self.state.attackers:
+            return  # Can only block actual attackers
+        
+        # Check if this blocker can legally block this attacker
+        if not self._can_block(blocker_perm, attacker_perm):
             return
-        # Menace (simplified): needs at least 2 different blockers -> allow selection but enforce on commit
-        # (Commit enforcement handled when assigning damage; if <2 blockers on menace attacker treat as unblocked)
-        # ensure blocker not already blocking another attacker (simplified single assignment)
+        
+        # Remove blocker from any other attacker it might be blocking (one blocker per attacker in simplified model)
         for lst in self.state.blockers.values():
             if blocker_perm in lst:
                 lst.remove(blocker_perm)
+        
         aid = attacker_perm.card.id
         self.state.blockers.setdefault(aid, [])
-        if attacker_perm not in self.state.attackers:
-            return
+        
+        # Toggle blocker assignment
         if blocker_perm in self.state.blockers[aid]:
             self.state.blockers[aid].remove(blocker_perm)
         else:
@@ -124,6 +189,15 @@ class CombatManager:
             if perm in owner.battlefield:
                 owner.battlefield.remove(perm)
             owner.graveyard.append(perm.card)
+            
+            # Emit death event for triggered abilities
+            try:
+                from engine.ability_engine import emit_game_event, TriggerCondition
+                emit_game_event(TriggerCondition.DIES, 
+                              affected=perm.card, controller=perm.card.controller_id)
+            except ImportError:
+                pass
+            
             if hasattr(self.game, 'rules_engine'):
                 self.game.rules_engine.on_card_dies(perm.card)
 

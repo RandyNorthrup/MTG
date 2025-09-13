@@ -314,24 +314,47 @@ def _create_card_from_data(card_data: Dict[str, Any], owner_id: int, is_commande
             except ValueError:
                 mana_cost = 0
     
-    # Create the Card object
-    card = Card(
-        id=card_id,
-        name=name,
-        types=types,
-        mana_cost=mana_cost,
-        mana_cost_str=mana_cost_str,
-        power=card_data.get('power'),
-        toughness=card_data.get('toughness'),
-        text=card_data.get('text', ''),
-        is_commander=is_commander,
-        color_identity=card_data.get('color_identity', []),
-        owner_id=owner_id,
-        controller_id=owner_id
-    )
-    
-    # Apply rules engine parsing for special abilities
-    parse_and_attach(card)
+    # Create the Card object with enhanced validation
+    try:
+        # Use enhanced card creation if available
+        from engine.enhanced_integration import EnhancedCardEngine
+        enhanced_engine = EnhancedCardEngine()
+        
+        # Prepare card data for enhanced creation
+        enhanced_card_data = {
+            'id': card_id,
+            'name': name,
+            'types': types,
+            'mana_cost': mana_cost,
+            'mana_cost_str': mana_cost_str,
+            'power': card_data.get('power'),
+            'toughness': card_data.get('toughness'),
+            'text': card_data.get('text', ''),
+            'color_identity': card_data.get('color_identity', []),
+            'is_commander': is_commander
+        }
+        
+        card = enhanced_engine.create_enhanced_card(enhanced_card_data, owner_id)
+        
+    except ImportError:
+        # Fallback to basic card creation if enhanced systems not available
+        card = Card(
+            id=card_id,
+            name=name,
+            types=types,
+            mana_cost=mana_cost,
+            mana_cost_str=mana_cost_str,
+            power=card_data.get('power'),
+            toughness=card_data.get('toughness'),
+            text=card_data.get('text', ''),
+            is_commander=is_commander,
+            color_identity=card_data.get('color_identity', []),
+            owner_id=owner_id,
+            controller_id=owner_id
+        )
+        
+        # Apply rules engine parsing for special abilities
+        parse_and_attach(card)
     
     return card
 
