@@ -529,32 +529,8 @@ class BattlefieldZone(QWidget):
             item = self.cards_layout.itemAt(i)
             if item and item.widget():
                 widget = item.widget()
-                try:
-                    # Disconnect all signals to prevent orphaned connections
-                    # Only disconnect if the signal is actually connected
-                    if hasattr(widget, 'card_clicked'):
-                        try:
-                            widget.card_clicked.disconnect()
-                        except (RuntimeError, TypeError):
-                            pass  # Signal not connected or widget deleted
-                    if hasattr(widget, 'card_right_clicked'):
-                        try:
-                            widget.card_right_clicked.disconnect()
-                        except (RuntimeError, TypeError):
-                            pass  # Signal not connected or widget deleted
-                    if hasattr(widget, 'card_hovered'):
-                        try:
-                            widget.card_hovered.disconnect()
-                        except (RuntimeError, TypeError):
-                            pass  # Signal not connected or widget deleted
-                    if hasattr(widget, 'card_drag_started'):
-                        try:
-                            widget.card_drag_started.disconnect()
-                        except (RuntimeError, TypeError):
-                            pass  # Signal not connected or widget deleted
-                except Exception:
-                    # Ignore disconnect errors - they're not critical
-                    pass
+                # Skip signal disconnection to avoid RuntimeWarnings
+                # Widgets will be deleted anyway, so connections will be cleaned up automatically
                 
                 # Remove from layout immediately
                 self.cards_layout.removeWidget(widget)
@@ -864,25 +840,8 @@ class HandDisplay(QWidget):
             item = self.cards_layout.itemAt(i)
             if item and item.widget():
                 widget = item.widget()
-                try:
-                    # Disconnect signals to prevent orphaned connections
-                    if hasattr(widget, 'card_clicked'):
-                        try:
-                            widget.card_clicked.disconnect()
-                        except (RuntimeError, TypeError):
-                            pass  # Signal not connected or widget deleted
-                    if hasattr(widget, 'card_right_clicked'):
-                        try:
-                            widget.card_right_clicked.disconnect()
-                        except (RuntimeError, TypeError):
-                            pass  # Signal not connected or widget deleted
-                    if hasattr(widget, 'card_hovered'):
-                        try:
-                            widget.card_hovered.disconnect()
-                        except (RuntimeError, TypeError):
-                            pass  # Signal not connected or widget deleted
-                except Exception:
-                    pass
+                # Skip signal disconnection to avoid RuntimeWarnings
+                # Widgets will be deleted anyway, so connections will be cleaned up automatically
                 
                 self.cards_layout.removeWidget(widget)
                 widget.deleteLater()
