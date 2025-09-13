@@ -277,6 +277,60 @@ class GameState:
             self.stack.push(StackItem(source_card=card, effect=effect, controller_id=pid))
             return ActionResult.OK
 
+        if "Artifact" in card.types:
+            # Try using proper mana pool system first
+            if hasattr(card, 'mana_cost_str') and card.mana_cost_str:
+                from .mana import parse_mana_cost
+                cost_dict = parse_mana_cost(card.mana_cost_str)
+                if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
+                    ps.hand.remove(card)
+                    ps.battlefield.append(Permanent(card=card))
+                    return ActionResult.OK
+                return ActionResult.ILLEGAL
+            else:
+                # Fallback to simple system - try to tap lands for mana first
+                if card.mana_cost > ps.mana:
+                    # Try to tap enough lands to generate the required mana
+                    mana_needed = card.mana_cost - ps.mana
+                    untapped_lands = [perm for perm in ps.battlefield 
+                                    if "Land" in perm.card.types and not perm.tapped]
+                    
+                    if len(untapped_lands) >= mana_needed:
+                        # Tap lands to generate needed mana
+                        for i in range(mana_needed):
+                            if i < len(untapped_lands):
+                                self.tap_for_mana(pid, untapped_lands[i])
+                
+                return (self._pay_and_move_to_battlefield(ps, card, card.mana_cost)
+                        if card.mana_cost <= ps.mana else ActionResult.ILLEGAL)
+
+        if "Enchantment" in card.types:
+            # Try using proper mana pool system first
+            if hasattr(card, 'mana_cost_str') and card.mana_cost_str:
+                from .mana import parse_mana_cost
+                cost_dict = parse_mana_cost(card.mana_cost_str)
+                if ps.mana_pool.cast_with_pool_and_lands(cost_dict, ps.battlefield):
+                    ps.hand.remove(card)
+                    ps.battlefield.append(Permanent(card=card))
+                    return ActionResult.OK
+                return ActionResult.ILLEGAL
+            else:
+                # Fallback to simple system - try to tap lands for mana first
+                if card.mana_cost > ps.mana:
+                    # Try to tap enough lands to generate the required mana
+                    mana_needed = card.mana_cost - ps.mana
+                    untapped_lands = [perm for perm in ps.battlefield 
+                                    if "Land" in perm.card.types and not perm.tapped]
+                    
+                    if len(untapped_lands) >= mana_needed:
+                        # Tap lands to generate needed mana
+                        for i in range(mana_needed):
+                            if i < len(untapped_lands):
+                                self.tap_for_mana(pid, untapped_lands[i])
+                
+                return (self._pay_and_move_to_battlefield(ps, card, card.mana_cost)
+                        if card.mana_cost <= ps.mana else ActionResult.ILLEGAL)
+
         return ActionResult.ILLEGAL
 
     def declare_attackers(self, pid: int):
